@@ -1,0 +1,304 @@
+
+#include "main.h"
+#define F_CLK 4000000   // bus clock is 4 MHz
+#include <stdlib.h> // For atoi
+
+#define BUFFER_SIZE 10 // Adjust based on expected input size
+
+char buffer[BUFFER_SIZE]; // Buffer to store incoming characters
+int bufferIndex = 0; // Current position in buffer
+
+UART_HandleTypeDef huart2;
+
+void SystemClock_Config(void);
+void GPIO_Init(void);
+void TIM5_Init (void);
+void USART_Init(void);
+void USART_Print(const char* message);
+void USART_ESC_Code(const char* code);
+void Terminal_Print(void);
+
+/**
+ * @brief  The application entry point.
+ * @retval int
+ */
+
+int receivedFlag;
+char receivedChar;
+
+int main(void)
+{
+    __enable_irq();
+	GPIO_Init();
+	USART_Init();
+	Terminal_Print();
+	TIM5_Init();
+
+	while (1) {
+		if (receivedFlag == 1) {
+		   if (receivedChar == '\r') {
+			   buffer[bufferIndex] = '\0';
+			   int receivedNumber = atoi(buffer);
+			   TIM5->DIER &= ~(1<<0); // Disable Update interrupt
+			   TIM5->ARR = receivedNumber-1;
+			   TIM5->CNT = 0; // Reset the counter
+			   TIM5->EGR |= (1<<0); // Generate an update event to update the prescaler *
+			   TIM5->DIER |= (1<<0); // Re-enable Update interrupt
+			   TIM5->CR1 |= (1<<0); // Start timer
+			   memset(buffer, 0, BUFFER_SIZE);
+			   bufferIndex = 0;
+			   Terminal_Print();
+		   } else if (bufferIndex < BUFFER_SIZE - 1){
+			   buffer[bufferIndex++] = receivedChar;
+		   }
+		   receivedFlag = 0;
+		}
+	}
+}
+
+void Terminal_Print(void) {
+	USART_ESC_Code("\033[2J"); // Clear the screen
+	USART_ESC_Code("\033[H");  // Move cursor to the top left corner
+	USART_Print("Please Input Blink Frequency in Hz: ");
+}
+
+void USART_Print(const char* message) {
+    uint8_t i;
+    for(i=0; message[i] != 0; i++){
+            //  check for terminating NULL character
+            while(!(USART2->ISR & (1<<7)));
+            // wait for transmit buffer to be empty
+            // HAL_Delay(5);
+            // Can't use HAL
+            USART2->TDR = message[i];
+            // transmit character to USART
+} }
+
+void USART_ESC_Code(const char* code) {
+   while(*code) {
+       while(!(USART2->ISR & (1<<7)));
+        USART2->TDR = *code++;
+   }
+}
+
+void USART2_IRQHandler(void) {
+   if (USART2->ISR & (1<<5)) {  // Check if receive not empty
+       receivedChar = USART2->RDR;  // Read received character
+	   receivedFlag = 1;
+       while(!(USART2->ISR & (1<<7))); // wait for txe reg empty
+	   USART2->TDR = receivedChar;  // Echo the received character
+       USART2->ISR &= ~(1<<5);  // Clear the RXNE flag
+   }
+}
+
+void TIM5_IRQHandler(void)
+{
+    if (TIM5->SR & (1<<0)) { // If UIF occurs, set PA4 high
+		TIM5->SR &= ~(1<<0);
+        GPIOA->ODR ^= (1<<5); // Toggle LED on PA5
+    }
+
+}
+
+void USART_Init(void) {
+
+	RCC->AHB2ENR |= (1<<0);
+	GPIOA->AFR[0] &= ~(0xF << 8 | 0xF << 12); // Clear PA2 and PA3 AF settings.
+	GPIOA->AFR[0] |= (0x7 << 8 | 0x7 << 12); // Set PA2 and PA3 to AF7.
+
+	GPIOA->OTYPER &= ~(1 << 2 | 1 << 3); // Output push-pull for PA2, PA3.
+	GPIOA->PUPDR &= ~(1 << 2 | 1 << 3);  // No pull-ups on PA2, PA3.
+	GPIOA->OSPEEDR &= ~(1 << 2 | 1 << 3);// PA2, PA3, low speed. (Could test high speed for better reliability. Low speed for lower power)
+	GPIOA->MODER &= ~(1 << 4 | 1 << 6);
+	GPIOA->MODER |= (1 << 5 | 1 << 7);  // Enable Alternate Function Mode for PA2 PA3
+
+	RCC->APB1ENR1 |= (1<<17); // enable USART by turning on system clock
+	USART2->CR1 &= ~(1 << 12 | 1 << 28); // Set data to 8 bits (M0M1 = 00).
+	USART2->BRR = F_CLK / 115200; // Baud rate at 115200.
+	USART2->CR1 |= (1 << 0); // Enable USART
+	USART2->CR1 |= (1 << 3 | 1 << 2); // Enable TE (Transmit) and RE (Receive) for USART
+
+	// enable interrupts for USART2 receive
+	USART2->CR1 |= (1 << 5); // Enable Receive Interrupts UART2 (RXNEIE)
+	USART2->ISR &= ~(1 << 5); // Clear interrupt flag
+
+	NVIC->ISER[1] = (1 << 6);
+}
+
+void TIM5_Init(void) {
+    RCC->APB1ENR1 |= (1<<3);
+
+    // Configure TIM2
+    TIM5->PSC = 4000 - 1; // Prescaler. Divides 4MHz to 1KHz.
+    TIM5->ARR = 1000 - 1; // Auto-reload value
+    // TIM2->CCR1 = 499; // Default wave goes to 50% of ARR
+
+    // Enable TIM2 interrupts
+    TIM5->DIER |= (1<<0); // Enable Update interrupt
+
+    NVIC->ISER[1] = 1<<18; // Enable TIM5 in the ISER
+}
+
+void GPIO_Init(void) {
+	RCC->AHB2ENR |= (1<<0);
+	// Set PA5 to output
+	GPIOA->MODER &= ~(0x3<<10); //*
+	GPIOA->MODER |= (1<<10); //*
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 1;
+  RCC_OscInitStruct.PLL.PLLN = 10;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV7;
+  RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
+  RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+/* USER CODE BEGIN MX_GPIO_Init_1 */
+/* USER CODE END MX_GPIO_Init_1 */
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : B1_Pin */
+  GPIO_InitStruct.Pin = B1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : LD2_Pin */
+  GPIO_InitStruct.Pin = LD2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+
+/* USER CODE BEGIN MX_GPIO_Init_2 */
+/* USER CODE END MX_GPIO_Init_2 */
+}
+
+/* USER CODE BEGIN 4 */
+
+/* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
+}
+
+#ifdef  USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */
