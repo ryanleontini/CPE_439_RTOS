@@ -10,16 +10,27 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 
 void GPIO_Init(void);
-void DMA_Init_Mem(void);
+void DMA_CPU_Init(void);
 void Fill_Array(void);
 void CPU_Copy(void);
 void DMA_Copy(void);
+void DMA_Init_Mem_ADC(void);
+void ADC_Init(void);
+void Start_New_ADC_Conversion(void);
 
 uint16_t sourceArray[1000];
 uint16_t destArray[1000];
 
+volatile uint16_t ADC_value = 0;	// global for interrupt access
+volatile uint8_t  ADC_flag = 0;		// global for interrupt access
+
+int dmaFlag = 0;
+
 int main(void)
 {
+  __enable_irq();
+
+  HAL_Init();
 
   SystemClock_Config();
 
@@ -27,20 +38,107 @@ int main(void)
   MX_USART2_UART_Init();
 
   GPIO_Init();
-  DMA_Init();
+  DMA_CPU_Init();
 
-  fillArray();
+  Fill_Array();
+
+  ADC1->CR |= ADC_CR_ADSTART;		// Start ADC conversion
 
   while (1)
   {
-	  CPU_Copy();
-
+	  Start_New_ADC_Conversion();
+	  run_DMA();
   }
 }
 
+void Start_New_ADC_Conversion(void) {
+	  if (ADC_flag == 1) {				// check global flag
+		  ADC_flag = 0;					// clear flag
+		  ADC1->CR |= ADC_CR_ADSTART;	// start a new conversion
+	  }
+}
+
+void ADC1_2_IRQHandler(void){
+	if (ADC1->ISR & ADC_ISR_EOC){	// Check that ADC1 conversion completed.
+		ADC_value = ADC1->DR;
+		ADC_flag = 1;
+	}
+}
+
+void ADC_Init(void) {
+	//-------------- CLOCK SETUP --------------//
+	RCC->AHB2ENR |= (RCC_APB2ENR_ADCEN); // ADC clock EN
+	RCC->AHB2ENR |= (RCC_AHB2ENR_GPIOAEN); // Enable GPIOA clock
+	ADC123_COMMON->CCR = ((ADC123_COMMON->CCR & ~(ADC_CCR_CKMODE)) | ADC_CCR_CKMODE_0 ); // Set ADC to system CLK (AHB PSC set to SYS CLK)
+
+	//-------------- ADC CALIBRATION --------------//
+	// Ensure DEEPPWD=0, ADVREGEN=1 and that ADC voltage regulator startup time has elapsed. (From Manual)
+	ADC1->CR &= ~(ADC_CR_DEEPPWD);
+	ADC1->CR |= (ADC_CR_ADVREGEN);
+	for (int i = 0; i<10000; i++) {}; // Delay ~20us to allow ADC voltage regulator startup.
+	ADC1->CR &= ~(ADC_CR_ADEN | ADC_CR_ADCALDIF);	// ADC Not EN, ADC in Single Ended Mode.
+	ADC1->CR |= ADC_CR_ADCAL; // Begin calibration.
+	while(ADC->CR & ADC_CR_ADCAL); // Wait for calibration to complete. (ADCAL goes to zero)
+	ADC1->DIFSEL &= ~(ADC_DIFSEL_DIFSEL_5); //* PA0 is ADC_IN5, Single Ended Mode
+
+	//-------------- ADC ENABLE --------------//
+	ADC1->ISR |= ADC_ISR_ADRDY; // Clear the ADRDY flag
+	ADC1->CR |= ADC_CR_ADEN; // ADC Enable Control
+//	ADC1->IER |= ADC_IER_ADRDYIE; // ADC Ready interrupt EN
+	while (!(ADC1->ISR & ADC_ISR_ADRDY)); // Wait for ADC Ready
+	ADC1->ISR |= ADC_ISR_ADRDY; // Clear the ADRDY flag
+
+	ADC1->SQR1 = (ADC1->SQR1 & ~(ADC_SQR1_SQ1_Msk | ADC_SQR1_L_Msk)) 	//* set sequence to 1 conversion on channel 5
+					| (5 << ADC_SQR1_SQ1_Pos);
+
+	//-------------- ADC INTERRUPTS ENABLE --------------//
+	ADC1->IER |= (ADC_IER_EOC); // Enable EOC Interrupts.
+	ADC1->ISR &= (ADC_ISR_EOC); // Clear EOC Interrupt flag.
+	NVIC->ISER[0] = (1 << (ADC1_2_IRQn & 0x1F)); // Enable vector Interrupts
+
+	//-------------- GPIO PA0 SETUP --------------//
+	 GPIOA->AFR[0] = (GPIOA->AFR[0] & ~(GPIO_AFRL_AFSEL0)) | (7 << GPIO_AFRL_AFSEL0_Pos); // *
+	 GPIOA->MODER |= (GPIOA_MODER_MODE0); // Set PA0 to Analog mode.
+	 GPIOA->ASCR |= GPIO_ASCR_ASC0; // Connect analog switch to the ADC input.
+
+}
+
+void DMA_Init_Mem_ADC(void) {
+
+	ADC_Init();
+	//-------------- DMA SETUP --------------//
+	RCC->AHB1ENR |= (RCC_AHB1ENR_DMA1EN); // DMA1_Channel1 Clock EN
+
+	DMA1_Channel1->CCR &= ~(DMA_CCR_EN); // Disable DMA
+	DMA1_Channel1->CCR |= (DMA_CCR_CIRC); // Circular mode enabled.
+	DMA1_Channel1->CCR &= ~(0x3<<10); // Clear MSIZE
+	DMA1_Channel1->CCR |= (1<<10); // Set Data transfer size to 16bit
+	DMA1_Channel1->CCR &= (DMA_CCR_DIR);// DIR set to default
+	DMA1_Channel1->CPAR = (uint32_t)sourceArray;// Set source address
+	DMA1_Channel1->CMAR = (uint32_t)destArray; // Set destination address
+	DMA1_Channel1->CNDTR = 1000; // Set number of items to transfer
+	DMA1_Channel1->CCR |= DMA_CCR_MINC | DMA_CCR_PINC; // Set mem and peripheral increment modes
+	DMA1_Channel1->CCR |= DMA_CCR_TEIE; // Set mem and peripheral increment modes
+	DMA1_Channel1->CCR |= DMA_CCR_HTIE; // Enable transfer halfway complete interrupts
+	DMA1_Channel1->CCR |= (DMA_CCR_TCIE); // Enable transfer complete interrupts
+	DMA1_Channel1->CCR &= ~(DMA_CCR_MEM2MEM); // Disable Memory to Memory Mode
+	NVIC->ISER[0] |= (1<<11); // Enable DMA1_CH1 NVIC
+}
+
+void run_DMA(void) {
+	  CPU_Copy();
+	  for(int i = 0; i<100; i++) {} // Delay 100 ticks
+	  memset(destArray, 0, sizeof(destArray));
+	  DMA_Copy();
+	  for(int i = 0; i<100; i++) {} // Delay 100 ticks
+}
+
+
 void DMA_Copy(void) {
-	GPIOB->BSRR |= (1<<2); // Set PB2 high
-	DMA2->CCR |= (1<<0); // Enable DMA
+	GPIOB->BSRR |= (1<<1); // Set PB1 high
+	DMA1_Channel1->CCR |= (1<<0); // Enable DMA
+	while (dmaFlag != 1);
+	GPIOB->BRR |= (1<<1); // Set PB1 low
 }
 
 void CPU_Copy(void) {
@@ -55,36 +153,46 @@ void Fill_Array(void) {
     }
 }
 
-void DMA2_IRQHandler(void) {
+void DMA1_Channel1_IRQHandler(void) {
 	// if x interrupt triggered
 	// clear interrupt flag
-	DMA2->CCR &= ~(1<<0); // Disable DMA
-	GPIOB->BRR |= (1<<2); // Set PB2 low
+	if (DMA1->ISR & DMA_ISR_TCIF1) {
+	    DMA1->IFCR = DMA_IFCR_CTCIF1; // Clear transfer complete flag for Channel 1
+	}
+	dmaFlag = 1;
+	DMA1_Channel1->CCR &= ~(1<<0); // Disable DMA
 
 }
 
-void DMA_Init_Mem(void) {
-	RCC->AHB1ENR |= (1<<22); // DMA2 Clock EN
+void DMA1_Channel1_TE_IRQHandler(void) {
 
-	DMA2->CCR &= ~(1<<0); // Disable DMA
-	DMA2->CCR |= (1<<14); // Memory to Memory Mode
-	DMA2->CCR &= ~(0x3<<10); // Clear MSIZE
-	DMA2->CCR &= ~(1<<5); // Circular mode must be disabled for mem2mem
-	DMA2->CCR |= (1<<10); // Set Data transfer size to 16bit
-	DMA2->CCR &= (1<<4);// DIR set to default
-	DMA2->CPAR = (uint32_t)sourceArray;// Set source address
-	DMA2->CMAR = (uint32_t)destArray; // Set destination address
-	DMA2->CNDTR = 1000; // Set number of items to transfer
-	// per increment mode (PINC)
-	// mem increment mode (MINC)
-	DMA2->CCR |= (1<<1); // enable transfer complete interrupts
+	GPIOB->BRR |= (1<<1); // Set PB1 low
+}
 
+void DMA_CPU_Init(void) {
+	RCC->AHB1ENR |= (RCC_AHB1ENR_DMA1EN); // DMA1_Channel1 Clock EN
+
+	DMA1_Channel1->CCR &= ~(DMA_CCR_EN); // Disable DMA
+	DMA1_Channel1->CCR &= ~(DMA_CCR_CIRC); // Circular mode must be disabled for mem2mem
+	DMA1_Channel1->CCR &= ~(0x3<<10); // Clear MSIZE
+	DMA1_Channel1->CCR |= (1<<10); // Set Data transfer size to 16bit
+	DMA1_Channel1->CCR &= (DMA_CCR_DIR);// DIR set to default
+	DMA1_Channel1->CPAR = (uint32_t)sourceArray;// Set source address
+	DMA1_Channel1->CMAR = (uint32_t)destArray; // Set destination address
+	DMA1_Channel1->CNDTR = 1000; // Set number of items to transfer
+	DMA1_Channel1->CCR |= DMA_CCR_MINC | DMA_CCR_PINC; // Set mem and peripheral increment modes
+	DMA1_Channel1->CCR |= DMA_CCR_TEIE; // Set mem and peripheral increment modes
+	DMA1_Channel1->CCR |= (DMA_CCR_TCIE); // enable transfer complete interrupts
+	DMA1_Channel1->CCR |= (DMA_CCR_MEM2MEM); // Enable Memory to Memory Mode
+	NVIC->ISER[0] |= (1<<11); // Enable DMA1_CH1 NVIC
 }
 
 void GPIO_Init(void) {
 	RCC->AHB2ENR |= (RCC_AHB2ENR_GPIOBEN); // Enable GPIOB clock
 	GPIOB->MODER &= ~(0x3<<4); // Clear PB2
 	GPIOB->MODER |= (1<<4); // PB2 to output
+	GPIOB->MODER &= ~(0x3<<2); // Clear PB1
+	GPIOB->MODER |= (1<<2); // PB1 to output
 }
 
 /**
