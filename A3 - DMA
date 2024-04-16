@@ -1,7 +1,7 @@
 
 #include "main.h"
 #include <string.h>
-
+#define F_CLK 4000000   // System clock is 4 MHz
 
 UART_HandleTypeDef huart2;
 
@@ -12,19 +12,29 @@ static void MX_USART2_UART_Init(void);
 void GPIO_Init(void);
 void DMA_CPU_Init(void);
 void Fill_Array(void);
+void Clear_Array(void);
+void DMA_Mem_Cpy(void);
 void CPU_Copy(void);
 void DMA_Copy(void);
-void DMA_Init_Mem_ADC(void);
+void DMA_ADC_Init(void);
 void ADC_Init(void);
 void Start_New_ADC_Conversion(void);
 
+void USART_Init(void);
+void USART_Print(const char* message);
+void USART_ESC_Code(const char* code);
+
 uint16_t sourceArray[1000];
 uint16_t destArray[1000];
+
+int receivedFlag;
+char receivedChar;
 
 volatile uint16_t ADC_value = 0;	// global for interrupt access
 volatile uint8_t  ADC_flag = 0;		// global for interrupt access
 
 int dmaFlag = 0;
+int adcCount = 0;
 
 int main(void)
 {
@@ -38,47 +48,38 @@ int main(void)
   MX_USART2_UART_Init();
 
   GPIO_Init();
-  DMA_CPU_Init();
 
-  Fill_Array();
+  // MEM MODE
+//  DMA_CPU_Init();
+//  Fill_Array();
 
-  ADC1->CR |= ADC_CR_ADSTART;		// Start ADC conversion
+  // ADC MODE
+  Clear_Array();
+  DMA_ADC_Init();
 
   while (1)
   {
-	  Start_New_ADC_Conversion();
-	  run_DMA();
+	  //DMA_Mem_Cpy();
   }
 }
 
-void Start_New_ADC_Conversion(void) {
-	  if (ADC_flag == 1) {				// check global flag
-		  ADC_flag = 0;					// clear flag
-		  ADC1->CR |= ADC_CR_ADSTART;	// start a new conversion
-	  }
-}
-
-void ADC1_2_IRQHandler(void){
-	if (ADC1->ISR & ADC_ISR_EOC){	// Check that ADC1 conversion completed.
-		ADC_value = ADC1->DR;
-		ADC_flag = 1;
-	}
-}
-
 void ADC_Init(void) {
+	ADC1->CR &= ~(ADC_CR_ADSTART);	// Disable ADSTART
+
 	//-------------- CLOCK SETUP --------------//
-	RCC->AHB2ENR |= (RCC_APB2ENR_ADCEN); // ADC clock EN
+	RCC->AHB2ENR |= (RCC_AHB2ENR_ADCEN); // ADC clock EN
 	RCC->AHB2ENR |= (RCC_AHB2ENR_GPIOAEN); // Enable GPIOA clock
 	ADC123_COMMON->CCR = ((ADC123_COMMON->CCR & ~(ADC_CCR_CKMODE)) | ADC_CCR_CKMODE_0 ); // Set ADC to system CLK (AHB PSC set to SYS CLK)
 
 	//-------------- ADC CALIBRATION --------------//
 	// Ensure DEEPPWD=0, ADVREGEN=1 and that ADC voltage regulator startup time has elapsed. (From Manual)
+
 	ADC1->CR &= ~(ADC_CR_DEEPPWD);
 	ADC1->CR |= (ADC_CR_ADVREGEN);
 	for (int i = 0; i<10000; i++) {}; // Delay ~20us to allow ADC voltage regulator startup.
 	ADC1->CR &= ~(ADC_CR_ADEN | ADC_CR_ADCALDIF);	// ADC Not EN, ADC in Single Ended Mode.
 	ADC1->CR |= ADC_CR_ADCAL; // Begin calibration.
-	while(ADC->CR & ADC_CR_ADCAL); // Wait for calibration to complete. (ADCAL goes to zero)
+	while(ADC1->CR & ADC_CR_ADCAL); // Wait for calibration to complete. (ADCAL goes to zero)
 	ADC1->DIFSEL &= ~(ADC_DIFSEL_DIFSEL_5); //* PA0 is ADC_IN5, Single Ended Mode
 
 	//-------------- ADC ENABLE --------------//
@@ -92,47 +93,62 @@ void ADC_Init(void) {
 					| (5 << ADC_SQR1_SQ1_Pos);
 
 	//-------------- ADC INTERRUPTS ENABLE --------------//
-	ADC1->IER |= (ADC_IER_EOC); // Enable EOC Interrupts.
-	ADC1->ISR &= (ADC_ISR_EOC); // Clear EOC Interrupt flag.
+	ADC1->IER &= ~(ADC_IER_EOC); // Enable EOC Interrupts.
+//	ADC1->ISR &= (ADC_ISR_EOC); // Clear EOC Interrupt flag.
 	NVIC->ISER[0] = (1 << (ADC1_2_IRQn & 0x1F)); // Enable vector Interrupts
 
 	//-------------- GPIO PA0 SETUP --------------//
-	 GPIOA->AFR[0] = (GPIOA->AFR[0] & ~(GPIO_AFRL_AFSEL0)) | (7 << GPIO_AFRL_AFSEL0_Pos); // *
-	 GPIOA->MODER |= (GPIOA_MODER_MODE0); // Set PA0 to Analog mode.
-	 GPIOA->ASCR |= GPIO_ASCR_ASC0; // Connect analog switch to the ADC input.
+	GPIOA->AFR[0] = (GPIOA->AFR[0] & ~(GPIO_AFRL_AFSEL0)) | (7 << GPIO_AFRL_AFSEL0_Pos); // *
+	GPIOA->MODER |= (GPIO_MODER_MODE0); // Set PA0 to Analog mode.
+	GPIOA->ASCR |= GPIO_ASCR_ASC0; // Connect analog switch to the ADC input.
 
+	ADC1->CFGR |= (ADC_CFGR_DMAEN); // Enable DMA Mode
+	ADC1->CFGR |= (ADC_CFGR_DMACFG);	// Enable Circular DMA Mode
+	ADC1->CFGR |= (ADC_CFGR_CONT);
+
+	ADC1->CR |= ADC_CR_ADSTART;		// Start ADC conversion
 }
 
-void DMA_Init_Mem_ADC(void) {
+void DMA_ADC_Init(void) {
 
-	ADC_Init();
 	//-------------- DMA SETUP --------------//
 	RCC->AHB1ENR |= (RCC_AHB1ENR_DMA1EN); // DMA1_Channel1 Clock EN
 
 	DMA1_Channel1->CCR &= ~(DMA_CCR_EN); // Disable DMA
 	DMA1_Channel1->CCR |= (DMA_CCR_CIRC); // Circular mode enabled.
+
+	// MSIZE
 	DMA1_Channel1->CCR &= ~(0x3<<10); // Clear MSIZE
 	DMA1_Channel1->CCR |= (1<<10); // Set Data transfer size to 16bit
-	DMA1_Channel1->CCR &= (DMA_CCR_DIR);// DIR set to default
-	DMA1_Channel1->CPAR = (uint32_t)sourceArray;// Set source address
+	// PSIZE
+	DMA1_Channel1->CCR &= ~(0x3<<8); // Clear PSIZE
+	DMA1_Channel1->CCR |= (1<<8); // Set Data transfer size to 16bit
+
+	DMA1_Channel1->CCR &= ~(DMA_CCR_DIR);// DIR set to read from peripheral
+	DMA1_Channel1->CPAR = &ADC1->DR; //* Set source address
 	DMA1_Channel1->CMAR = (uint32_t)destArray; // Set destination address
 	DMA1_Channel1->CNDTR = 1000; // Set number of items to transfer
-	DMA1_Channel1->CCR |= DMA_CCR_MINC | DMA_CCR_PINC; // Set mem and peripheral increment modes
+	DMA1_Channel1->CCR |= DMA_CCR_MINC;
+	DMA1_Channel1->CCR &= ~(DMA_CCR_PINC); // Set mem and peripheral increment modes
 	DMA1_Channel1->CCR |= DMA_CCR_TEIE; // Set mem and peripheral increment modes
 	DMA1_Channel1->CCR |= DMA_CCR_HTIE; // Enable transfer halfway complete interrupts
 	DMA1_Channel1->CCR |= (DMA_CCR_TCIE); // Enable transfer complete interrupts
 	DMA1_Channel1->CCR &= ~(DMA_CCR_MEM2MEM); // Disable Memory to Memory Mode
 	NVIC->ISER[0] |= (1<<11); // Enable DMA1_CH1 NVIC
+
+	DMA1_Channel1->CCR |= (1<<0); // Enable DMA
+
+	ADC_Init();
+//	while (dmaFlag != 1);
 }
 
-void run_DMA(void) {
+void DMA_Mem_Cpy(void) {
 	  CPU_Copy();
 	  for(int i = 0; i<100; i++) {} // Delay 100 ticks
 	  memset(destArray, 0, sizeof(destArray));
 	  DMA_Copy();
 	  for(int i = 0; i<100; i++) {} // Delay 100 ticks
 }
-
 
 void DMA_Copy(void) {
 	GPIOB->BSRR |= (1<<1); // Set PB1 high
@@ -153,14 +169,23 @@ void Fill_Array(void) {
     }
 }
 
+void Clear_Array(void) {
+    for(int i = 0; i < 1000; i++) {
+        destArray[i] = 0;
+    }
+}
+
 void DMA1_Channel1_IRQHandler(void) {
 	// if x interrupt triggered
 	// clear interrupt flag
 	if (DMA1->ISR & DMA_ISR_TCIF1) {
 	    DMA1->IFCR = DMA_IFCR_CTCIF1; // Clear transfer complete flag for Channel 1
 	}
+	if (DMA1->ISR & DMA_ISR_HTIF1) {
+	    DMA1->IFCR = DMA_IFCR_CHTIF1; // Clear transfer complete flag for Channel 1
+	}
 	dmaFlag = 1;
-	DMA1_Channel1->CCR &= ~(1<<0); // Disable DMA
+//	DMA1_Channel1->CCR &= ~(1<<0); // Disable DMA
 
 }
 
