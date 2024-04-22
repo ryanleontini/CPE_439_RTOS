@@ -14,11 +14,19 @@ void DMA_ADC_Init(void);
 void ADC_Init(void);
 void GPIO_Init(void);
 void TIM2_Init(void);
+void FFT_Init(void);
+void Perform_FFT(void);
 
 #define ARRAY_SIZE 2048
 
 uint16_t sourceArray[ARRAY_SIZE];
 uint16_t destArray[ARRAY_SIZE];
+
+float32_t complexInput[ARRAY_SIZE * 2];
+float32_t complexOutput[ARRAY_SIZE * 2];
+arm_cfft_radix4_instance_f32 S;
+
+int FFT_Flag = 0;
 
 int main(void)
 {
@@ -33,18 +41,53 @@ int main(void)
   GPIO_Init();
   TIM2_Init();
 
+
   DMA_ADC_Init();
   TIM2->CR1 |= TIM_CR1_CEN;			// start timer
 
-  int count = 0;
   while (1)
   {
-	  count++;
-	  if (count > 10) {
-	     GPIOB->ODR ^= (1 << 1);         // Toggle the GPIO pin
+	  if (FFT_Flag) {
+		  // Perform FFT of dest_array
+		  Perform_FFT();
+		  FFT_Flag = 0;
 	  }
 
   }
+}
+
+void Perform_FFT(void) {
+	GPIOB->BRR |= (1<<2); // Set PB2 high
+    for (int i = 0; i < ARRAY_SIZE; i++) {
+        complexInput[2 * i] = (float32_t)destArray[i]; // Real part
+        complexInput[2 * i + 1] = 0.0f; // Imaginary part set to 0
+    }
+    arm_cfft_radix4_f32(&S, complexInput);
+    arm_cmplx_mag_f32(complexInput, complexOutput, ARRAY_SIZE);
+
+    float maxMagnitude = 0;
+    uint32_t maxIndex = 0;
+
+    for (int i = 0; i < ARRAY_SIZE; i++) {
+        if (complexOutput[i] > maxMagnitude) {
+            maxMagnitude = complexOutput[i];
+            maxIndex = i;
+        }
+    }
+
+    float adcClockFrequency = 4000000;
+    float cyclesPerConversion = 92.5;
+    float sampleRate = adcClockFrequency / cyclesPerConversion;
+    float frequency = (sampleRate / ARRAY_SIZE) * maxIndex;
+
+
+	GPIOB->BRR &= ~(1<<2); // Set PB2 low
+
+}
+
+void FFT_Init(void) {
+    arm_cfft_radix4_init_f32(&S, ARRAY_SIZE, 0, 1);
+
 }
 
 void ADC1_2_IRQHandler(void) {
@@ -85,10 +128,10 @@ void ADC_Init(void) {
 	ADC1->SMPR1 |= (0b101 << (3 * 5));
 
 	//-------------- ADC INTERRUPTS ENABLE --------------//
-	ADC1->IER |= (ADC_IER_EOCIE); // Enable EOC Interrupts.
+	ADC1->IER &= ~(ADC_IER_EOCIE); // Enable EOC Interrupts.
 //    ADC1->SQR1 = 0;                     // One conversion in the regular sequence
 //    ADC1->SQR1 = ADC_CHANNEL_1;               // Set the channel you want to use
-	NVIC->ISER[0] = (1 << (ADC1_2_IRQn & 0x1F)); // Enable vector Interrupts for ADC1_2
+	//NVIC->ISER[0] = (1 << (ADC1_2_IRQn & 0x1F)); // Enable vector Interrupts for ADC1_2
 
 	//-------------- GPIO PA0 SETUP --------------//
 	GPIOA->AFR[0] = (GPIOA->AFR[0] & ~(GPIO_AFRL_AFSEL0)) | (7 << GPIO_AFRL_AFSEL0_Pos); // *
@@ -96,7 +139,7 @@ void ADC_Init(void) {
 	GPIOA->ASCR |= GPIO_ASCR_ASC0; // Connect analog switch to the ADC input.
 
 	ADC1->CFGR |= (ADC_CFGR_DMAEN); // Enable DMA Mode
-	ADC1->CFGR |= (ADC_CFGR_DMACFG);	// Enable Circular DMA Mode
+	ADC1->CFGR &= ~(ADC_CFGR_DMACFG);	// Enable Circular DMA Mode
 	ADC1->CFGR &= ~(ADC_CFGR_CONT);   // Single Conversion Mode
 
 	// EXT11 TIM2_TRGO Internal signal from on-chip timers 1011
@@ -115,7 +158,7 @@ void DMA_ADC_Init(void) {
 	RCC->AHB1ENR |= (RCC_AHB1ENR_DMA1EN); // DMA1_Channel1 Clock EN
 
 	DMA1_Channel1->CCR &= ~(DMA_CCR_EN); // Disable DMA
-	DMA1_Channel1->CCR |= (DMA_CCR_CIRC); // Circular mode enabled.
+	DMA1_Channel1->CCR &= ~(DMA_CCR_CIRC); // Circular mode disabled.
 
 	// MSIZE
 	DMA1_Channel1->CCR &= ~(0x3<<10); // Clear MSIZE
@@ -131,10 +174,12 @@ void DMA_ADC_Init(void) {
 	DMA1_Channel1->CCR |= DMA_CCR_MINC;
 	DMA1_Channel1->CCR &= ~(DMA_CCR_PINC); // Set mem and peripheral increment modes
 	DMA1_Channel1->CCR |= DMA_CCR_TEIE; // Set mem and peripheral increment modes
-	DMA1_Channel1->CCR |= DMA_CCR_HTIE; // Enable transfer halfway complete interrupts
+	DMA1_Channel1->CCR &= ~DMA_CCR_HTIE; // Enable transfer halfway complete interrupts
 	DMA1_Channel1->CCR |= (DMA_CCR_TCIE); // Enable transfer complete interrupts
 	DMA1_Channel1->CCR &= ~(DMA_CCR_MEM2MEM); // Disable Memory to Memory Mode
 	NVIC->ISER[0] |= (1<<11); // Enable DMA1_CH1 NVIC
+    NVIC_SetPriority(DMA1_Channel1_IRQn, 0);  // Set DMA interrupt to highest priority
+
 
 	DMA1_Channel1->CCR |= (1<<0); // Enable DMA
 
@@ -153,10 +198,10 @@ void DMA1_Channel1_IRQHandler(void) {
 	}
 	if (DMA1->ISR & DMA_ISR_TCIF1) {
 	    DMA1->IFCR = DMA_IFCR_CTCIF1; // Clear transfer complete flag for Channel
-
+	    FFT_Flag = 1;
 	    // Clear these two lines in Mem2Mem mode.
-		GPIOB->BRR |= (1<<2); // Set PB2 low
-		GPIOB->BSRR |= (1<<1); // Set PB1 high
+//		GPIOB->BRR |= (1<<2); // Set PB2 low
+//		GPIOB->BSRR |= (1<<1); // Set PB1 high
 	}
 
 }
@@ -169,6 +214,8 @@ void TIM2_Init(void) {
 	TIM2->CR2 &= ~TIM_CR2_MMS;          // Clear MMS bits
 	TIM2->CR2 |= TIM_CR2_MMS_1;         // Update Event (UEV) as TRG0 (MMS:010)
     NVIC->ISER[0] = (1 << 28); // Enable TIM2 Interrupts
+    NVIC_SetPriority(TIM2_IRQn, 1);           // Set TIM2 interrupt to lower priority than DMA
+
 }
 
 void GPIO_Init(void) {
