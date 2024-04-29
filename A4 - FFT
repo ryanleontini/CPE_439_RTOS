@@ -1,36 +1,74 @@
-
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2024 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
 #include "main.h"
-
 #include "arm_math.h"
 
-#define ADC_CHANNEL_1 1
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
 
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
 UART_HandleTypeDef huart2;
 
+/* USER CODE BEGIN PV */
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 void DMA_ADC_Init(void);
-void ADC_Init(void);
-void GPIO_Init(void);
-void TIM2_Init(void);
-void FFT_Init(void);
+void TIM2_Init (void);
 void Perform_FFT(void);
+void GPIO_Init(void) ;
 
-#define ARRAY_SIZE 2048
+#define ARRAY_SIZE 256
 
 uint16_t sourceArray[ARRAY_SIZE];
 uint16_t destArray[ARRAY_SIZE];
 
-float32_t complexInput[ARRAY_SIZE * 2];
-float32_t complexOutput[ARRAY_SIZE * 2];
+static float32_t complexInput[ARRAY_SIZE];
+static float32_t complexOutput[ARRAY_SIZE];
 arm_cfft_radix4_instance_f32 S;
 
-int FFT_Flag = 0;
+volatile int FFT_Flag = 0;
 
 int main(void)
 {
-  __enable_irq();
 
   HAL_Init();
 
@@ -38,30 +76,37 @@ int main(void)
 
   MX_GPIO_Init();
   MX_USART2_UART_Init();
-  GPIO_Init();
-  TIM2_Init();
-
 
   DMA_ADC_Init();
-  TIM2->CR1 |= TIM_CR1_CEN;			// start timer
+  TIM2_Init();
+  GPIO_Init();
 
-  while (1)
-  {
-	  if (FFT_Flag) {
-		  // Perform FFT of dest_array
-		  Perform_FFT();
-		  FFT_Flag = 0;
-	  }
 
-  }
+	ADC1->CR |= ADC_CR_ADSTART; // start ADC (in triggered mode)
+	TIM2->CR1 = TIM_CR1_CEN;    // start timer
+
+
+	while(1) {
+		if (FFT_Flag == 1) {
+			Perform_FFT();
+		}
+	}
 }
 
 void Perform_FFT(void) {
 	GPIOB->BRR |= (1<<2); // Set PB2 high
+
+	arm_status status;
+    status = arm_cfft_radix4_init_f32(&S, ARRAY_SIZE, 0, 1);
+    if (status != ARM_MATH_SUCCESS) {
+    	GPIOB->BRR |= (1<<2); // Set PB2 high
+    }
+
     for (int i = 0; i < ARRAY_SIZE; i++) {
         complexInput[2 * i] = (float32_t)destArray[i]; // Real part
         complexInput[2 * i + 1] = 0.0f; // Imaginary part set to 0
     }
+
     arm_cfft_radix4_f32(&S, complexInput);
     arm_cmplx_mag_f32(complexInput, complexOutput, ARRAY_SIZE);
 
@@ -76,80 +121,80 @@ void Perform_FFT(void) {
     }
 
     float adcClockFrequency = 4000000;
-    float cyclesPerConversion = 92.5;
+    float cyclesPerConversion = 2.5;
     float sampleRate = adcClockFrequency / cyclesPerConversion;
     float frequency = (sampleRate / ARRAY_SIZE) * maxIndex;
 
 
+    char message[50];  // Adjust size as necessary
+//	sprintf(message, "Frequency: %.2f Hz", frequency);  // %.2f controls the precision to 2 decimal places
+
+	if(HAL_UART_Transmit(&huart2, (uint8_t*)message, strlen(message), 1000) != HAL_OK)
+	{
+	  // Transmission Error
+	  Error_Handler();
+	}
+	HAL_Delay(1000); // Delay for 1 second to ensure data is sent before the next loop
+
 	GPIOB->BRR &= ~(1<<2); // Set PB2 low
 
-}
-
-void FFT_Init(void) {
-    arm_cfft_radix4_init_f32(&S, ARRAY_SIZE, 0, 1);
+	FFT_Flag = 0;
 
 }
 
-void ADC1_2_IRQHandler(void) {
-    if (ADC1->ISR & ADC_ISR_EOC) {         // Check if the EOC flag is set
-        ADC1->ISR &= ~ADC_ISR_EOC;        // Clear the EOC flag
-        GPIOB->ODR ^= (1 << 2);         // Toggle the GPIO pin
-    }
-}
+void GPIO_Init(void) {
 
-void ADC_Init(void) {
-	ADC1->CR &= ~(ADC_CR_ADSTART);	// Disable ADSTART
+  	RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN; // Enable GPIOA clock
 
-	//-------------- CLOCK SETUP --------------//
-	RCC->AHB2ENR |= (RCC_AHB2ENR_ADCEN); // ADC clock EN
-	RCC->AHB2ENR |= (RCC_AHB2ENR_GPIOAEN); // Enable GPIOA clock
-	ADC123_COMMON->CCR = ((ADC123_COMMON->CCR & ~(ADC_CCR_CKMODE)) | ADC_CCR_CKMODE_0 ); // Set ADC to system CLK (AHB PSC set to SYS CLK)
-
-	//-------------- ADC CALIBRATION --------------//
-	// Ensure DEEPPWD=0, ADVREGEN=1 and that ADC voltage regulator startup time has elapsed. (From Manual)
-
-	ADC1->CR &= ~(ADC_CR_DEEPPWD);
-	ADC1->CR |= (ADC_CR_ADVREGEN);
-	for (int i = 0; i<10000; i++) {}; // Delay ~20us to allow ADC voltage regulator startup.
-	ADC1->CR &= ~(ADC_CR_ADEN | ADC_CR_ADCALDIF);	// ADC Not EN, ADC in Single Ended Mode.
-	ADC1->CR |= ADC_CR_ADCAL; // Begin calibration.
-	while(ADC1->CR & ADC_CR_ADCAL); // Wait for calibration to complete. (ADCAL goes to zero)
-	ADC1->DIFSEL &= ~(ADC_DIFSEL_DIFSEL_5); //* PA0 is ADC_IN5, Single Ended Mode
-
-	//-------------- ADC ENABLE --------------//
-	ADC1->ISR |= ADC_ISR_ADRDY; // Clear the ADRDY flag
-	ADC1->CR |= ADC_CR_ADEN; // ADC Enable Control
-	while (!(ADC1->ISR & ADC_ISR_ADRDY)); // Wait for ADC Ready
-	ADC1->ISR |= ADC_ISR_ADRDY; // Clear the ADRDY flag
-
-	ADC1->SQR1 = (ADC1->SQR1 & ~(ADC_SQR1_SQ1_Msk | ADC_SQR1_L_Msk)) 	//* set sequence to 1 conversion on channel 1
-					| (1 << ADC_SQR1_SQ1_Pos);
-	ADC1->SMPR1 &= ~(ADC_SMPR1_SMP5);   // Clear existing sampling time settings for channel 5
-	ADC1->SMPR1 |= (0b101 << (3 * 5));
-
-	//-------------- ADC INTERRUPTS ENABLE --------------//
-	ADC1->IER &= ~(ADC_IER_EOCIE); // Enable EOC Interrupts.
-//    ADC1->SQR1 = 0;                     // One conversion in the regular sequence
-//    ADC1->SQR1 = ADC_CHANNEL_1;               // Set the channel you want to use
-	//NVIC->ISER[0] = (1 << (ADC1_2_IRQn & 0x1F)); // Enable vector Interrupts for ADC1_2
-
-	//-------------- GPIO PA0 SETUP --------------//
 	GPIOA->AFR[0] = (GPIOA->AFR[0] & ~(GPIO_AFRL_AFSEL0)) | (7 << GPIO_AFRL_AFSEL0_Pos); // *
 	GPIOA->MODER |= (GPIO_MODER_MODE0); // Set PA0 to Analog mode.
-	GPIOA->ASCR |= GPIO_ASCR_ASC0; // Connect analog switch to the ADC input.
+	GPIOA->ASCR |= GPIO_ASCR_ASC0;
+	GPIOA->MODER &= ~(0b01<<2); // Set PA1 to Alternate function mode.
+	GPIOA->MODER |= (0b10<<2); // Set PA1 to Alternate function mode.
+	GPIOA->AFR[0] = 0b1<<4; // A1 AF1
+
+}
+void TIM2_Init (void) {
+	RCC->APB1ENR1 |= RCC_APB1ENR1_TIM2EN;
+
+	// OC1M
+	TIM2->PSC = 1; // set some prescaler
+	TIM2->EGR = TIM_EGR_UG; // load prescaler
+	TIM2->CR2 = TIM_CR2_MMS_1; // master mode 010: update
+	TIM2->ARR = 1953; // set period
+	TIM2->SR = 0; // clear update status caused by TIM_EGR_UG
+
+	TIM2->CCR2 = 0;
+	TIM2->CCMR1 |= (0b11 << 12) | (0 << 24) | (0b00 << 8);
+	TIM2->CCER |= TIM_CCER_CC2E;
+    TIM2->DIER |= TIM_DIER_UIE; // Enable Update interrupt
+	NVIC_EnableIRQ(TIM2_IRQn);
+
+}
+void ADC_Init(void) {
+	RCC->AHB2ENR |= RCC_AHB2ENR_ADCEN;
+	ADC123_COMMON->CCR = ADC_CCR_CKMODE; // set a valid clock, hclk / 4
+	ADC1->CR = 0; // clear sleep mode
+	ADC1->CR;     // wait a bit
+	ADC1->CR = ADC_CR_ADVREGEN; // enable ADC regulator
+	HAL_Delay(100);
+	ADC1->CR |= ADC_CR_ADEN; // enable ADC
+	while(!(ADC1->ISR & ADC_ISR_ADRDY)) // wait for ADC ready
+		;
+	ADC1->IER |= ADC_IER_EOCIE; // enable EOC interrupt, just for control
+	ADC1->IER |= ADC_IER_OVRIE; // enable EOC interrupt, just for control
+
+	ADC1->SQR1 = (4 << ADC_SQR1_SQ1_Pos); // Channel 5 as the first and only conversion in the sequence
+
+	ADC1->CFGR = ADC_CFGR_EXTEN_0 | // enable trigger on rising edge
+			(3 << ADC_CFGR_EXTSEL_Pos); // Event 3 is TIM2_CH2
 
 	ADC1->CFGR |= (ADC_CFGR_DMAEN); // Enable DMA Mode
-	ADC1->CFGR &= ~(ADC_CFGR_DMACFG);	// Enable Circular DMA Mode
-	ADC1->CFGR &= ~(ADC_CFGR_CONT);   // Single Conversion Mode
+	ADC1->CFGR &= ~(ADC_CFGR_DMACFG);	// Disable Circular DMA Mode
 
-	// EXT11 TIM2_TRGO Internal signal from on-chip timers 1011
-    ADC1->CFGR &= ~ADC_CFGR_EXTEN;       // Clear EXTEN bits.
-    ADC1->CFGR |= ADC_CFGR_EXTEN_0; 	// Enable EXTEN on rising edge.
-	ADC1->CFGR &= ~ADC_CFGR_EXTSEL;		// Clear EXTSEL
-	ADC1->CFGR |= (0b1011 << 6);		// TIM2 TRGO on Event 11
-
-	ADC1->CR |= ADC_CR_ADSTART;		// Start ADC conversion
-
+	// GPIO
+	ADC1->DIFSEL &= ~(ADC_DIFSEL_DIFSEL_5); //* PA0 is ADC_IN5, Single Ended Mode
+	NVIC_EnableIRQ(ADC1_IRQn);
 }
 
 void DMA_ADC_Init(void) {
@@ -158,7 +203,7 @@ void DMA_ADC_Init(void) {
 	RCC->AHB1ENR |= (RCC_AHB1ENR_DMA1EN); // DMA1_Channel1 Clock EN
 
 	DMA1_Channel1->CCR &= ~(DMA_CCR_EN); // Disable DMA
-	DMA1_Channel1->CCR &= ~(DMA_CCR_CIRC); // Circular mode disabled.
+	DMA1_Channel1->CCR &= ~DMA_CCR_CIRC; // Circular mode disabled.
 
 	// MSIZE
 	DMA1_Channel1->CCR &= ~(0x3<<10); // Clear MSIZE
@@ -169,61 +214,51 @@ void DMA_ADC_Init(void) {
 
 	DMA1_Channel1->CCR &= ~(DMA_CCR_DIR);// DIR set to read from peripheral
 	DMA1_Channel1->CPAR = (uint32_t) &ADC1->DR; //* Set source address
-	DMA1_Channel1->CMAR = (uint32_t)destArray; // Set destination address
+	DMA1_Channel1->CMAR = (uint32_t) destArray; // Set destination address
 	DMA1_Channel1->CNDTR = ARRAY_SIZE; // Set number of items to transfer
-	DMA1_Channel1->CCR |= DMA_CCR_MINC;
-	DMA1_Channel1->CCR &= ~(DMA_CCR_PINC); // Set mem and peripheral increment modes
-	DMA1_Channel1->CCR |= DMA_CCR_TEIE; // Set mem and peripheral increment modes
+	DMA1_Channel1->CCR |= DMA_CCR_MINC; // Set mem increment modes
+	DMA1_Channel1->CCR &= ~(DMA_CCR_PINC); // Set peripheral increment modes
+	DMA1_Channel1->CCR |= DMA_CCR_TEIE;
 	DMA1_Channel1->CCR &= ~DMA_CCR_HTIE; // Enable transfer halfway complete interrupts
 	DMA1_Channel1->CCR |= (DMA_CCR_TCIE); // Enable transfer complete interrupts
 	DMA1_Channel1->CCR &= ~(DMA_CCR_MEM2MEM); // Disable Memory to Memory Mode
+
 	NVIC->ISER[0] |= (1<<11); // Enable DMA1_CH1 NVIC
-    NVIC_SetPriority(DMA1_Channel1_IRQn, 0);  // Set DMA interrupt to highest priority
+    NVIC_SetPriority(DMA1_Channel1_IRQn, 0);  // Set DMA interrupt to higher priority than ADC
 
-
-	DMA1_Channel1->CCR |= (1<<0); // Enable DMA
-
-	ADC_Init();
+    DMA1_Channel1->CCR |= (1<<0); // Enable DMA
+    ADC_Init();
 }
 
-void DMA1_Channel1_IRQHandler(void) {
-	// if x interrupt triggered
-	// clear interrupt flag
-	if (DMA1->ISR & DMA_ISR_HTIF1) {
-	    DMA1->IFCR = DMA_IFCR_CHTIF1; // Clear transfer half complete flag for Channel 1
-
-	    // Clear these two lines in Mem2Mem mode.
-		GPIOB->BSRR |= (1<<2); // Set PB2 high
-		GPIOB->BRR |= (1<<1); // Set PB1 low
-	}
+void DMA1_Channel1_IRQHandler() {
 	if (DMA1->ISR & DMA_ISR_TCIF1) {
-	    DMA1->IFCR = DMA_IFCR_CTCIF1; // Clear transfer complete flag for Channel
+	    DMA1->IFCR |= DMA_IFCR_CTCIF1;
 	    FFT_Flag = 1;
-	    // Clear these two lines in Mem2Mem mode.
-//		GPIOB->BRR |= (1<<2); // Set PB2 low
-//		GPIOB->BSRR |= (1<<1); // Set PB1 high
 	}
-
+	if (DMA1->ISR & DMA_ISR_TEIF1) {
+	    DMA1->IFCR |= DMA_IFCR_CTEIF1;
+	}
 }
 
-void TIM2_Init(void) {
-	// System clock is 4MHz
-    RCC->APB1ENR1 |= (RCC_APB1ENR1_TIM2EN);	// turn on TIM2
-	TIM2->ARR = 1952; // 4000000 / 1953 = 2048Hz
-	TIM2->DIER |= (TIM_DIER_UIE); // Enable update interrupts
-	TIM2->CR2 &= ~TIM_CR2_MMS;          // Clear MMS bits
-	TIM2->CR2 |= TIM_CR2_MMS_1;         // Update Event (UEV) as TRG0 (MMS:010)
-    NVIC->ISER[0] = (1 << 28); // Enable TIM2 Interrupts
-    NVIC_SetPriority(TIM2_IRQn, 1);           // Set TIM2 interrupt to lower priority than DMA
-
+void TIM2_IRQHandler() {
+    if (TIM2->SR & TIM_SR_UIF) { // If UIF occurs, set PA4 high
+		TIM2->SR &= ~(TIM_SR_UIF);
+    }
 }
 
-void GPIO_Init(void) {
-	RCC->AHB2ENR |= (RCC_AHB2ENR_GPIOBEN); // Enable GPIOB clock
-	GPIOB->MODER &= ~(0x3<<4); // Clear PB2
-	GPIOB->MODER |= (1<<4); // PB2 to output
-	GPIOB->MODER &= ~(0x3<<2); // Clear PB1
-	GPIOB->MODER |= (1<<2); // PB1 to output
+void ADC1_IRQHandler() {
+	if (ADC1->ISR & ADC_ISR_OVR) {
+		ADC1->ISR = ADC_ISR_OVR;
+	}
+	if (ADC1->ISR & ADC_ISR_EOC) {
+//		uint32_t adcValue = ADC1->DR;
+		ADC1->ISR = ADC_ISR_EOC;
+	}
+	if (ADC1->ISR & ADC_ISR_EOS) {
+		ADC1->ISR = ADC_ISR_EOS;
+	}
+//	ADC1->ISR = ADC_ISR_EOC; // clear interrupt flag
+//	GPIOB->ODR ^= 1; // toggle green
 }
 
 /**
