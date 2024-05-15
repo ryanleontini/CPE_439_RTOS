@@ -19,9 +19,12 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
+#include "freeRTOS.h"
+#include "semphr.h"
 #include "spi.h"
 #include "usart.h"
 #include "gpio.h"
+#include "timers.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -39,6 +42,7 @@
 /* USER CODE BEGIN PTD */
 extern UART_HandleTypeDef huart2;
 #define STACK_SIZE 512
+#define TIMER_PERIOD_MS 5000 // 30 seconds in milliseconds
 
 /* USER CODE END PTD */
 
@@ -58,6 +62,13 @@ extern UART_HandleTypeDef huart2;
 volatile SpiritFlagStatus xTxDoneFlag;
 volatile SpiritFlagStatus xRxDoneFlag;
 TaskHandle_t xReceiveTaskHandle = NULL;
+//TimerHandle_t x30SecondTimer;
+xSemaphoreHandle xMutex;
+
+
+uint8_t currentState;
+int initialTransmit = 0;
+volatile int isAborting = 0;
 
 /* USER CODE END PV */
 
@@ -67,10 +78,12 @@ void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
 void Spirit_Register_Init(void);
 void updateNodesTable(void);
-void transmit(void);
+void transmit(uint8_t flag);
 void receive(void);
 void clearScreen(void);
 void heartBeatTask(void);
+void getSpirit1State(void);
+void vTimerCallback(TimerHandle_t xTimer);
 
 /* USER CODE END PFP */
 
@@ -95,6 +108,7 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
+  __enable_irq();
 
   /* USER CODE END Init */
 
@@ -116,42 +130,59 @@ int main(void)
   SpiritPktStackSetDestinationAddress(0xFF); // Me
 
   initNodesArray();
-//  addNode(0x45, "John1", 5);
-//  addNode(0x41, "John2", 5);
-//  addNode(0x42, "John3", 5);
-//  addNode(0x43, "John4", 5);
-//  addNode(0x44, "John5", 5);
-//  addNode(0x46, "John6", 23);
-//  addNode(0x47, "John7", 23);
-//  addNode(0x48, "John8", 23);
-//  addNode(0x49, "John9", 23);
-//  addNode(0x50, "John10", 23);
   clearScreen();
 
   /* USER CODE END 2 */
 
   /* Init scheduler */
-//  osKernelInitialize();
-//
-//  /* Call init function for freertos objects (in freertos.c) */
-//  MX_FREERTOS_Init();
-//
-//  /* State Machine Task */
-//
-//  /* Data processing task */
-//
-//  /* Display UART Task */
-//  if (xTaskCreate(updateNodesTable, "HelloWorld", STACK_SIZE, NULL, tskIDLE_PRIORITY + 4, NULL) != pdPASS){ while(1); }
-//  if (xTaskCreate(receive, "receive", STACK_SIZE, NULL, tskIDLE_PRIORITY + 0, &xReceiveTaskHandle) != pdPASS){ while(1); }
-//  if (xTaskCreate(heartBeatTask, "heartbeat", STACK_SIZE, NULL, tskIDLE_PRIORITY + 0, NULL) != pdPASS){ while(1); }
-//
-//  /* Heartbeat task */
-//
-//  /* Start scheduler */
-//  osKernelStart();
+  osKernelInitialize();
+
+  /* Call init function for freertos objects (in freertos.c) */
+  MX_FREERTOS_Init();
+
+  /* State Machine Task */
+
+  /* Data processing task */
+
+  /* Display UART Task */
+
+  xMutex = xSemaphoreCreateMutex();
+  if (xMutex == NULL) {
+      // Handle error
+      while(1);
+  }
+
+  if (xTaskCreate(updateNodesTable, "updateNodes", STACK_SIZE, NULL, tskIDLE_PRIORITY + 4, NULL) != pdPASS){ while(1); }
+  if (xTaskCreate(receive, "receive", STACK_SIZE, NULL, tskIDLE_PRIORITY + 1, &xReceiveTaskHandle) != pdPASS){ while(1); }
+  if (xTaskCreate(heartBeatTask, "heartbeat", STACK_SIZE, NULL, tskIDLE_PRIORITY + 0, NULL) != pdPASS){ while(1); }
+
+//  if (xTaskCreate(transmit, "transmit", STACK_SIZE, NULL, tskIDLE_PRIORITY + 0, &xReceiveTaskHandle) != pdPASS){ while(1); }
+//  x30SecondTimer = xTimerCreate("30SecondTimer", pdMS_TO_TICKS(TIMER_PERIOD_MS), pdTRUE, (void *)0, vTimerCallback);
 
 
-//  vTaskStartScheduler();
+//  if (x30SecondTimer == NULL)
+//  {
+//      // The timer was not created
+//      printf("Timer creation failed.\n");
+//      while (1);
+//  }
+//  else
+//  {
+//      // Start the timer
+//      if (xTimerStart(x30SecondTimer, 0) != pdPASS)
+//      {
+//          // The timer could not be started
+//          printf("Timer start failed.\n");
+//          while (1);
+//      }
+//  }
+  /* Heartbeat task */
+
+  /* Start scheduler */
+  osKernelStart();
+
+
+  vTaskStartScheduler();
 
   /* We should never get here as control is now taken by the scheduler */
   /* Infinite loop */
@@ -159,7 +190,8 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-	  transmit();
+//	  receive();
+//	  transmit();
 
 //	  displayNodesTable();
 //	  HAL_Delay(1000);
@@ -222,27 +254,61 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
-void heartBeatTask(void) {
-    const TickType_t xDelay = 4000 / portTICK_PERIOD_MS; // 4s delay
+void getSpirit1State(void) {
+    // Read the status register
+//	uint8_t status;
+//    StatusBytes spiritStatus = SpiritSpiReadRegisters(MC_STATE0_BASE, 1, &status);
 
-	vTaskDelay( xDelay );
+    SpiritStatus currentStatus;
+    SpiritSpiReadRegisters(MC_STATE0_BASE, 1, (uint8_t *)&currentStatus);
 
-    if (xReceiveTaskHandle != NULL) {
-        vTaskSuspend(xReceiveTaskHandle);
-    }
+    //    currentStatus.MC_STATE = (spiritStatus.Status & 0x70) >> 4; // Extract the relevant bits
 
+    // Initialize other fields if necessary
+//    uint8_t stateBits = currentStatus.MC_STATE; // Assuming MC_STATE gives the state bits (consult the datasheet)
+
+//    return currentStatus.MC_STATE;
+}
+
+void vTimerCallback(TimerHandle_t xTimer)
+{
+    // Call the transmit function
+	isAborting = 1;
     SpiritCmdStrobeSabort();
+    SpiritStatus currentStatus;
+    SpiritSpiReadRegisters(MC_STATE0_BASE, 1, &currentStatus);
+    transmit(3);
+	isAborting = 0;
 
-    transmit();
-
-    if (xReceiveTaskHandle != NULL) {
-        vTaskResume(xReceiveTaskHandle);
-    }
-
-	// Abort receive for TX
-//    SpiritCmdStrobeSabort();
+    printf("Transmit function called by timer.\n");
+}
 
 
+void heartBeatTask(void) {
+	while(1) {
+		const TickType_t xDelay = 5000 / portTICK_PERIOD_MS; // 4s delay
+
+		vTaskDelay( xDelay );
+
+        if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
+
+
+			if (xReceiveTaskHandle != NULL) {
+				vTaskSuspend(xReceiveTaskHandle);
+			}
+
+			transmit(3);
+//			isAborting = 0;
+
+		//    taskEXIT_CRITICAL();
+
+			if (xReceiveTaskHandle != NULL) {
+				vTaskResume(xReceiveTaskHandle);
+			}
+            xSemaphoreGive(xMutex);
+
+        }
+	}
 }
 
 void updateNodesTable(void) {
@@ -267,60 +333,75 @@ void clearScreen(void) {
 }
 
 void receive(void) {
+
     /* Receive */
+
+	if (initialTransmit == 0) {
+    	transmit(1);
+	}
+
 	while(1) {
+        if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
 
-		char payload[20] = "Hello World!\r\n";
+			char payload[20];
+			uint16_t length;
+			uint8_t rxLen;
 
-		uint8_t rxLen;
+			SpiritCmdStrobeFlushRxFifo();
 
-		xRxDoneFlag = S_RESET;
-		SPSGRF_StartRx();
-		while (!xRxDoneFlag);
-	//	xRxDoneFlag = S_RESET;
+			xRxDoneFlag = S_RESET;
 
-	    uint8_t sourceAddress;
-	    sourceAddress = SpiritPktStackGetReceivedSourceAddress();
+			SpiritCmdStrobeRx();
 
+			while (!xRxDoneFlag);
 
-	    char* name = getNameFromHex(sourceAddress);
+			uint8_t sourceAddress;
+			sourceAddress = SpiritPktStackGetReceivedSourceAddress();
 
-	    addNode(sourceAddress, name, 110);
+			char* name = getNameFromHex(sourceAddress);
 
+			addNode(sourceAddress, name, 110);
+
+			char *cursor = "\x1B[1;41H";
+        	length = strlen(cursor);
+        	HAL_UART_Transmit(&huart2, (uint8_t *)cursor, length, 100);
+
+		    rxLen = SPSGRF_GetRxData(payload);
+		    HAL_UART_Transmit(&huart2, "Node says: ", 10, HAL_MAX_DELAY);
+		    HAL_UART_Transmit(&huart2, payload, rxLen, HAL_MAX_DELAY);
+
+            xSemaphoreGive(xMutex);
+
+        }
 	}
 
 }
 //
-void transmit(void) {
+void transmit(uint8_t flag) {
 	/* Transmit */
-	while(1) {
-		char payload[20] = "Hello World!\r\n";
-		xTxDoneFlag = S_RESET;
-		SPSGRF_StartTx(payload, strlen(payload));
-		while(!xTxDoneFlag);
-	//	xTxDoneFlag = S_RESET;
+//	while (1) {
+//	    const TickType_t xDelay = 2000 / portTICK_PERIOD_MS; // 4s delay
+//
+//		vTaskDelay( xDelay );
 
-		HAL_UART_Transmit(&huart2, "Payload Sent\r\n", 14, HAL_MAX_DELAY);
-	}
+//			uint8_t flag = flag;
+		    uint8_t payload[100];
+		    payload[0] = flag;
+			xTxDoneFlag = S_RESET;
+//			getSpirit1State();
+			SPSGRF_StartTx(flag, strlen(flag));
+		    SpiritStatus currentStatus;
+		    SpiritSpiReadRegisters(MC_STATE0_BASE, 1, (uint8_t *)&currentStatus);
+			while(!xTxDoneFlag);
+	//        xSemaphoreTake(xTxDoneSemaphore, portMAX_DELAY);  // Wait for semaphore
+
+		//	xTxDoneFlag = S_RESET;
+
+//			HAL_UART_Transmit(&huart2, "Payload Sent\r\n", 14, HAL_MAX_DELAY);
+//	}
+
 
 }
-//
-//void Spirit_Register_Init(void) {
-////	SpiritSpiWriteRegisters(cRegAddress, cNbBytes, pcBuffer);
-//
-//}
-
-//void displayNodesTable(void) {
-//    char *clearScreen = "\x1B[H\x1B[2K"; // Command to clear the screen
-//    char *moveCursor = "\x1B[H"; // Command to move cursor to the top left
-//
-//    uint16_t clearScreenLength = strlen(clearScreen);
-//    uint16_t moveCursorLength = strlen(moveCursor);
-//
-//    HAL_UART_Transmit(&huart2, (uint8_t *)clearScreen, clearScreenLength, 100); // Transmit with data length and timeout
-//    HAL_UART_Transmit(&huart2, (uint8_t *)moveCursor, moveCursorLength, 100); // Transmit with data length and timeout
-//
-//}
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
@@ -344,10 +425,20 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     SpiritIrqClearStatus();
 
   }
-  if (xIrqStatus.IRQ_RX_DATA_DISC || xIrqStatus.IRQ_RX_TIMEOUT)
+  if (xIrqStatus.IRQ_RX_DATA_DISC)
   {
-    SpiritCmdStrobeRx();
+      if (!isAborting) // Check if the abort process is happening
+      {
+          SpiritCmdStrobeRx();
+      }
     SpiritIrqClearStatus();
+  }
+  if (xIrqStatus.IRQ_RX_TIMEOUT)
+  {
+//      if (!isAborting) // Check if the abort process is happening
+//      {
+	  SpiritCmdStrobeRx();
+	  SpiritIrqClearStatus();
 
   }
 }
