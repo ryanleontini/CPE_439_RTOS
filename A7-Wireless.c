@@ -44,6 +44,10 @@ extern UART_HandleTypeDef huart2;
 #define STACK_SIZE 512
 #define TIMER_PERIOD_MS 5000 // 30 seconds in milliseconds
 
+#define MAX_MESSAGES 30
+#define MAX_MESSAGE_LENGTH 40
+
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -62,6 +66,11 @@ extern UART_HandleTypeDef huart2;
 volatile SpiritFlagStatus xTxDoneFlag;
 volatile SpiritFlagStatus xRxDoneFlag;
 TaskHandle_t xReceiveTaskHandle = NULL;
+
+char messageBuffer[MAX_MESSAGES][MAX_MESSAGE_LENGTH];
+int messageCount = 0;
+int messageIndex = 0; // To track the current message to be transmitted
+
 //TimerHandle_t x30SecondTimer;
 xSemaphoreHandle xMutex;
 
@@ -69,6 +78,7 @@ xSemaphoreHandle xMutex;
 uint8_t currentState;
 int initialTransmit = 0;
 volatile int isAborting = 0;
+int firstACK = 0;
 
 /* USER CODE END PV */
 
@@ -324,26 +334,80 @@ void clearScreen(void) {
 	char *clear = "\x1B[2J\x1B[H";
 	length = strlen(clear);
 	HAL_UART_Transmit(&huart2, (uint8_t *)clear, length, 100);
+
 	char *cursor = "\x1B[H";
 	length = strlen(cursor);
 	HAL_UART_Transmit(&huart2, (uint8_t *)cursor, length, 100);
-	char *ready = "Ready to receive. \n";
-	length = strlen(ready);
-	HAL_UART_Transmit(&huart2, (uint8_t *)ready, length, 100);
+
+//	char *ready = "Ready to receive. \n";
+//	length = strlen(ready);
+//	HAL_UART_Transmit(&huart2, (uint8_t *)ready, length, 100);
 }
+
+
+void clearLeft(void) {
+    uint16_t length;
+    char row[20]; // Buffer for the formatted row position string
+    char *column = "\x1B[40X";
+
+    for (int i = 1; i <= 24; ++i) { // Assuming a 24-row terminal for this example
+        // Format the row position string
+        snprintf(row, sizeof(row), "\x1B[%d;1H", i);
+        length = strlen(row);
+        HAL_UART_Transmit(&huart2, (uint8_t *)row, length, 100);
+
+        // Transmit the clear column command
+        length = strlen(column);
+        HAL_UART_Transmit(&huart2, (uint8_t *)column, length, 100);
+    }
+}
+
+
 
 void receive(void) {
 
     /* Receive */
 
 	if (initialTransmit == 0) {
-    	transmit(1);
+		uint8_t flag = 1;
+    	transmit(flag);
+
+//		uint16_t length;
+//		uint8_t rxLen;
+//		for (int i = 0; i < 10; i++) {
+//	    	transmit(1);
+//			SpiritCmdStrobeRx();
+//			while (!xRxDoneFlag);
+//
+//            char payload[MAX_MESSAGE_LENGTH];
+//            rxLen = SPSGRF_GetRxData(payload);
+//            payload[rxLen] = '\0'; // Ensure null-termination
+//
+//	    	if (payload[0] == 2 && !firstACK) {
+//				uint8_t sourceAddress;
+//				sourceAddress = SpiritPktStackGetReceivedSourceAddress();
+//
+//				char* name = getNameFromHex(sourceAddress);
+//				addNode(sourceAddress, name, 110);
+//
+//				snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "First ACK received from: %s", name);
+//				firstACK = 1;
+//				// Store the message in the buffer, overwriting the oldest if necessary
+//				messageIndex = (messageIndex + 1) % MAX_MESSAGES;
+//
+//				if (messageCount < MAX_MESSAGES) {
+//					messageCount++;
+//				}
+//				break;
+//	    	}
+//		}
+
 	}
 
 	while(1) {
         if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
 
-			char payload[20];
+//			char payload[20];
 			uint16_t length;
 			uint8_t rxLen;
 
@@ -357,18 +421,59 @@ void receive(void) {
 
 			uint8_t sourceAddress;
 			sourceAddress = SpiritPktStackGetReceivedSourceAddress();
-
 			char* name = getNameFromHex(sourceAddress);
 
 			addNode(sourceAddress, name, 110);
+
+            char payload[MAX_MESSAGE_LENGTH];
+            rxLen = SPSGRF_GetRxData(payload);
+            payload[rxLen] = '\0'; // Ensure null-termination
 
 			char *cursor = "\x1B[1;41H";
         	length = strlen(cursor);
         	HAL_UART_Transmit(&huart2, (uint8_t *)cursor, length, 100);
 
-		    rxLen = SPSGRF_GetRxData(payload);
-		    HAL_UART_Transmit(&huart2, "Node says: ", 10, HAL_MAX_DELAY);
-		    HAL_UART_Transmit(&huart2, payload, rxLen, HAL_MAX_DELAY);
+        	if (payload[0] == 1) {
+
+        		// Transmit
+    			uint8_t sourceAddress;
+    			sourceAddress = SpiritPktStackGetReceivedSourceAddress();
+    			char* name = getNameFromHex(sourceAddress);
+
+        		SpiritPktStackSetDestinationAddress(name);
+
+        		SpiritPktStackSetDestinationAddress(0xFF);
+
+
+        	}
+        	else if (payload[0] == 2 && !firstACK) {
+                snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "First ACK received from: %s", name);
+                firstACK = 1;
+                // Store the message in the buffer, overwriting the oldest if necessary
+                messageIndex = (messageIndex + 1) % MAX_MESSAGES;
+
+                if (messageCount < MAX_MESSAGES) {
+                    messageCount++;
+                }
+            }
+        	else if (payload[0] == 3) {
+                snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "Heartbeat received from: %s", name);
+                // Store the message in the buffer, overwriting the oldest if necessary
+                messageIndex = (messageIndex + 1) % MAX_MESSAGES;
+
+                if (messageCount < MAX_MESSAGES) {
+                    messageCount++;
+                }
+            }
+        	else {
+                snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "%s: Message: %s", name, payload);
+                messageIndex = (messageIndex + 1) % MAX_MESSAGES;
+
+                if (messageCount < MAX_MESSAGES) {
+                    messageCount++;
+                }
+
+        	}
 
             xSemaphoreGive(xMutex);
 
@@ -377,29 +482,55 @@ void receive(void) {
 
 }
 //
+
+void cursor(void) {
+    uint16_t length;
+
+	char *cursor = "\x1B[1;41H";
+	length = strlen(cursor);
+	HAL_UART_Transmit(&huart2, (uint8_t *)cursor, length, 100);
+}
+
+void transmitMessages(void) {
+    uint16_t length;
+    char cursor[20]; // Buffer for cursor position string
+
+    // Start from row 1 and column 41 (adjust row start if needed)
+    int startRow = 1;
+
+//    if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
+        for (int i = 0; i < messageCount; i++) {
+            // Calculate cursor position for the current message
+            snprintf(cursor, sizeof(cursor), "\x1B[%d;41H", startRow + i);
+            length = strlen(cursor);
+
+            // Move the cursor to the calculated position
+            HAL_UART_Transmit(&huart2, (uint8_t *)cursor, length, 100);
+
+            // Transmit the message
+            HAL_UART_Transmit(&huart2, (uint8_t *)messageBuffer[i], strlen(messageBuffer[i]), HAL_MAX_DELAY);
+        }
+
+        // Reset the message count after transmitting
+//        xSemaphoreGive(xMutex);
+//    }
+}
+
+
+
+
 void transmit(uint8_t flag) {
-	/* Transmit */
-//	while (1) {
-//	    const TickType_t xDelay = 2000 / portTICK_PERIOD_MS; // 4s delay
-//
-//		vTaskDelay( xDelay );
 
-//			uint8_t flag = flag;
-		    uint8_t payload[100];
-		    payload[0] = flag;
-			xTxDoneFlag = S_RESET;
+	uint8_t payload[100] = {0};
+	payload[0] = flag;
+
+	xTxDoneFlag = S_RESET;
 //			getSpirit1State();
-			SPSGRF_StartTx(flag, strlen(flag));
-		    SpiritStatus currentStatus;
-		    SpiritSpiReadRegisters(MC_STATE0_BASE, 1, (uint8_t *)&currentStatus);
-			while(!xTxDoneFlag);
-	//        xSemaphoreTake(xTxDoneSemaphore, portMAX_DELAY);  // Wait for semaphore
+	uint8_t txLen = 1;
 
-		//	xTxDoneFlag = S_RESET;
+	SPSGRF_StartTx(payload, txLen);
 
-//			HAL_UART_Transmit(&huart2, "Payload Sent\r\n", 14, HAL_MAX_DELAY);
-//	}
-
+	while(!xTxDoneFlag);
 
 }
 
