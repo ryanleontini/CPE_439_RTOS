@@ -95,6 +95,7 @@ void clearScreen(void);
 void heartBeatTask(void);
 void getSpirit1State(void);
 void vTimerCallback(TimerHandle_t xTimer);
+void initTerminal(void);
 
 /* USER CODE END PFP */
 
@@ -141,6 +142,8 @@ int main(void)
   SpiritPktStackSetDestinationAddress(0xFF); // Me
 
   initNodesArray();
+
+  initTerminal();
   clearScreen();
 
   /* USER CODE END 2 */
@@ -297,16 +300,14 @@ void vTimerCallback(TimerHandle_t xTimer)
 
 void heartBeatTask(void) {
 	while(1) {
-		const TickType_t xDelay = 2000 / portTICK_PERIOD_MS; // 10s delay
+		const TickType_t xDelay = 5000 / portTICK_PERIOD_MS; // 10s delay
 
 		vTaskDelay( xDelay );
 
         if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
 
-        	isAborting = 1;
-        	SpiritCmdStrobeSabort();
+
 			transmit(3);
-        	isAborting = 0;
 
             snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "Heartbeat Sent.");
             messageIndex = (messageIndex + 1) % MAX_MESSAGES;
@@ -315,58 +316,11 @@ void heartBeatTask(void) {
                 messageCount++;
             }
 
-//			isAborting = 0;
-
-		//    taskEXIT_CRITICAL();
-
             xSemaphoreGive(xMutex);
 
         }
 	}
 }
-
-void updateNodesTable(void) {
-	while(1) {
-		displayNodesTable();
-		decrementNodesTable();
-	}
-}
-
-void clearScreen(void) {
-	  uint16_t length;
-
-	char *clear = "\x1B[2J\x1B[H";
-	length = strlen(clear);
-	HAL_UART_Transmit(&huart2, (uint8_t *)clear, length, 100);
-
-	char *cursor = "\x1B[H";
-	length = strlen(cursor);
-	HAL_UART_Transmit(&huart2, (uint8_t *)cursor, length, 100);
-
-//	char *ready = "Ready to receive. \n";
-//	length = strlen(ready);
-//	HAL_UART_Transmit(&huart2, (uint8_t *)ready, length, 100);
-}
-
-
-void clearLeft(void) {
-    uint16_t length;
-    char row[20]; // Buffer for the formatted row position string
-    char *column = "\x1B[40X";
-
-    for (int i = 1; i <= 24; ++i) { // Assuming a 24-row terminal for this example
-        // Format the row position string
-        snprintf(row, sizeof(row), "\x1B[%d;1H", i);
-        length = strlen(row);
-        HAL_UART_Transmit(&huart2, (uint8_t *)row, length, 100);
-
-        // Transmit the clear column command
-        length = strlen(column);
-        HAL_UART_Transmit(&huart2, (uint8_t *)column, length, 100);
-    }
-}
-
-
 
 void receive(void) {
 
@@ -375,42 +329,42 @@ void receive(void) {
 	if (initialTransmit == 0) {
 		uint8_t flag = 1;
     	transmit(flag);
-//
-//		uint16_t length;
-//		uint8_t rxLen;
-//		for (int i = 0; i < 10; i++) {
-//	    	transmit(1);
-//			SpiritCmdStrobeRx();
-//			while (!xRxDoneFlag);
-//
-//            char payload[MAX_MESSAGE_LENGTH];
-//            rxLen = SPSGRF_GetRxData(payload);
-//            payload[rxLen] = '\0'; // Ensure null-termination
-//
-//	    	if (payload[0] == 2) {
-//				uint8_t sourceAddress;
-//				sourceAddress = SpiritPktStackGetReceivedSourceAddress();
-//
-//				char* name = getNameFromHex(sourceAddress);
-//				addNode(sourceAddress, name, 110);
-//
-//				snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "First ACK received from: %s", name);
-//				firstACK = 1;
-//				// Store the message in the buffer, overwriting the oldest if necessary
-//				messageIndex = (messageIndex + 1) % MAX_MESSAGES;
-//
-//				if (messageCount < MAX_MESSAGES) {
-//					messageCount++;
-//				}
-//				break;
-//	    	}
-//		}
-//		snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "No ACKs received.");
-//		messageIndex = (messageIndex + 1) % MAX_MESSAGES;
-//
-//		if (messageCount < MAX_MESSAGES) {
-//			messageCount++;
-//		}
+
+		uint16_t length;
+		uint8_t rxLen;
+		for (int i = 0; i < 10; i++) {
+	    	transmit(1);
+			SpiritCmdStrobeRx();
+			while (!xRxDoneFlag);
+
+            char payload[MAX_MESSAGE_LENGTH];
+            rxLen = SPSGRF_GetRxData(payload);
+            payload[rxLen] = '\0'; // Ensure null-termination
+
+	    	if (payload[0] == 2) {
+				uint8_t sourceAddress;
+				sourceAddress = SpiritPktStackGetReceivedSourceAddress();
+
+				char* name = getNameFromHex(sourceAddress);
+				addNode(sourceAddress, name);
+
+				snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "First ACK received from: %s", name);
+				firstACK = 1;
+				// Store the message in the buffer, overwriting the oldest if necessary
+				messageIndex = (messageIndex + 1) % MAX_MESSAGES;
+
+				if (messageCount < MAX_MESSAGES) {
+					messageCount++;
+				}
+				break;
+	    	}
+		}
+		snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "No ACKs received. Starting network.");
+		messageIndex = (messageIndex + 1) % MAX_MESSAGES;
+
+		if (messageCount < MAX_MESSAGES) {
+			messageCount++;
+		}
 
 	}
 
@@ -435,7 +389,7 @@ void receive(void) {
 			char* name = getNameFromHex(sourceAddress);
 
 			if (!timeout) {
-				addNode(sourceAddress, name, 110);
+				addNode(sourceAddress, name);
 			}
 
             char payload[MAX_MESSAGE_LENGTH];
@@ -499,7 +453,42 @@ void receive(void) {
 	}
 
 }
-//
+
+void updateNodesTable(void) {
+	while(1) {
+		displayNodesTable();
+		decrementNodesTable();
+	}
+}
+
+void clearScreen(void) {
+	  uint16_t length;
+
+	char *clear = "\x1B[2J\x1B[H";
+	length = strlen(clear);
+	HAL_UART_Transmit(&huart2, (uint8_t *)clear, length, 100);
+
+	char *cursor = "\x1B[H";
+	length = strlen(cursor);
+	HAL_UART_Transmit(&huart2, (uint8_t *)cursor, length, 100);
+}
+
+void clearLeft(void) {
+    uint16_t length;
+    char row[20]; // Buffer for the formatted row position string
+    char *column = "\x1B[40X";
+
+    for (int i = 1; i <= 24; ++i) { // Assuming a 24-row terminal for this example
+        // Format the row position string
+        snprintf(row, sizeof(row), "\x1B[%d;1H", i);
+        length = strlen(row);
+        HAL_UART_Transmit(&huart2, (uint8_t *)row, length, 100);
+
+        // Transmit the clear column command
+        length = strlen(column);
+        HAL_UART_Transmit(&huart2, (uint8_t *)column, length, 100);
+    }
+}
 
 void cursor(void) {
     uint16_t length;
@@ -516,22 +505,18 @@ void transmitMessages(void) {
     // Start from row 1 and column 41 (adjust row start if needed)
     int startRow = 1;
 
-//    if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
-        for (int i = 0; i < messageCount; i++) {
-            // Calculate cursor position for the current message
-            snprintf(cursor, sizeof(cursor), "\x1B[%d;41H", startRow + i);
-            length = strlen(cursor);
+	for (int i = 0; i < messageCount; i++) {
+		// Calculate cursor position for the current message
+		snprintf(cursor, sizeof(cursor), "\x1B[%d;41H", startRow + i);
+		length = strlen(cursor);
 
-            // Move the cursor to the calculated position
-            HAL_UART_Transmit(&huart2, (uint8_t *)cursor, length, 100);
+		// Move the cursor to the calculated position
+		HAL_UART_Transmit(&huart2, (uint8_t *)cursor, length, 100);
 
-            // Transmit the message
-            HAL_UART_Transmit(&huart2, (uint8_t *)messageBuffer[i], strlen(messageBuffer[i]), HAL_MAX_DELAY);
-        }
+		// Transmit the message
+		HAL_UART_Transmit(&huart2, (uint8_t *)messageBuffer[i], strlen(messageBuffer[i]), HAL_MAX_DELAY);
+	}
 
-        // Reset the message count after transmitting
-//        xSemaphoreGive(xMutex);
-//    }
 }
 
 
@@ -543,14 +528,24 @@ void transmit(uint8_t flag) {
 	payload[0] = flag;
 
 	xTxDoneFlag = S_RESET;
-//			getSpirit1State();
 	uint8_t txLen = 1;
 
+	isAborting = 1;
+	SpiritCmdStrobeSabort();
 	SPSGRF_StartTx(payload, txLen);
+	isAborting = 0;
 
 	while(!xTxDoneFlag);
+	isAborting = 1;
+	SpiritCmdStrobeSabort();
+	isAborting = 0;
 
 }
+
+void initTerminal(void) {
+
+}
+
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
@@ -586,16 +581,10 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   }
   if (xIrqStatus.IRQ_RX_TIMEOUT)
   {
-//      if (!isAborting) // Check if the abort process is happening
-//      {
-//      xSemaphoreGiveFromISR(xMutex);
 	  xRxDoneFlag = S_SET;
 	  timeout = 1;
 
-//	  SpiritCmdStrobeRx();
 	  SpiritIrqClearStatus();
-
-
   }
 }
 
