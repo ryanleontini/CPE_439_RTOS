@@ -45,7 +45,7 @@ extern UART_HandleTypeDef huart2;
 #define TIMER_PERIOD_MS 5000 // 30 seconds in milliseconds
 
 #define MAX_MESSAGES 30
-#define MAX_MESSAGE_LENGTH 40
+#define MAX_MESSAGE_LENGTH 50
 
 
 /* USER CODE END PTD */
@@ -79,6 +79,7 @@ uint8_t currentState;
 int initialTransmit = 0;
 volatile int isAborting = 0;
 int firstACK = 0;
+int timeout = 0;
 
 /* USER CODE END PV */
 
@@ -296,25 +297,28 @@ void vTimerCallback(TimerHandle_t xTimer)
 
 void heartBeatTask(void) {
 	while(1) {
-		const TickType_t xDelay = 5000 / portTICK_PERIOD_MS; // 4s delay
+		const TickType_t xDelay = 2000 / portTICK_PERIOD_MS; // 10s delay
 
 		vTaskDelay( xDelay );
 
         if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
 
-
-			if (xReceiveTaskHandle != NULL) {
-				vTaskSuspend(xReceiveTaskHandle);
-			}
-
+        	isAborting = 1;
+        	SpiritCmdStrobeSabort();
 			transmit(3);
+        	isAborting = 0;
+
+            snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "Heartbeat Sent.");
+            messageIndex = (messageIndex + 1) % MAX_MESSAGES;
+
+            if (messageCount < MAX_MESSAGES) {
+                messageCount++;
+            }
+
 //			isAborting = 0;
 
 		//    taskEXIT_CRITICAL();
 
-			if (xReceiveTaskHandle != NULL) {
-				vTaskResume(xReceiveTaskHandle);
-			}
             xSemaphoreGive(xMutex);
 
         }
@@ -371,7 +375,7 @@ void receive(void) {
 	if (initialTransmit == 0) {
 		uint8_t flag = 1;
     	transmit(flag);
-
+//
 //		uint16_t length;
 //		uint8_t rxLen;
 //		for (int i = 0; i < 10; i++) {
@@ -383,7 +387,7 @@ void receive(void) {
 //            rxLen = SPSGRF_GetRxData(payload);
 //            payload[rxLen] = '\0'; // Ensure null-termination
 //
-//	    	if (payload[0] == 2 && !firstACK) {
+//	    	if (payload[0] == 2) {
 //				uint8_t sourceAddress;
 //				sourceAddress = SpiritPktStackGetReceivedSourceAddress();
 //
@@ -401,6 +405,12 @@ void receive(void) {
 //				break;
 //	    	}
 //		}
+//		snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "No ACKs received.");
+//		messageIndex = (messageIndex + 1) % MAX_MESSAGES;
+//
+//		if (messageCount < MAX_MESSAGES) {
+//			messageCount++;
+//		}
 
 	}
 
@@ -410,6 +420,7 @@ void receive(void) {
 //			char payload[20];
 			uint16_t length;
 			uint8_t rxLen;
+			timeout = 0;
 
 			SpiritCmdStrobeFlushRxFifo();
 
@@ -423,7 +434,9 @@ void receive(void) {
 			sourceAddress = SpiritPktStackGetReceivedSourceAddress();
 			char* name = getNameFromHex(sourceAddress);
 
-			addNode(sourceAddress, name, 110);
+			if (!timeout) {
+				addNode(sourceAddress, name, 110);
+			}
 
             char payload[MAX_MESSAGE_LENGTH];
             rxLen = SPSGRF_GetRxData(payload);
@@ -442,12 +455,14 @@ void receive(void) {
 
         		SpiritPktStackSetDestinationAddress(name);
 
+        		transmit(2);
+
         		SpiritPktStackSetDestinationAddress(0xFF);
 
 
         	}
-        	else if (payload[0] == 2 && !firstACK) {
-                snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "First ACK received from: %s", name);
+        	else if (payload[0] == 2) {
+                snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "ACK received from: %s", name);
                 firstACK = 1;
                 // Store the message in the buffer, overwriting the oldest if necessary
                 messageIndex = (messageIndex + 1) % MAX_MESSAGES;
@@ -466,16 +481,19 @@ void receive(void) {
                 }
             }
         	else {
-                snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "%s: Message: %s", name, payload);
-                messageIndex = (messageIndex + 1) % MAX_MESSAGES;
+        		// Need to stop printing on timeouts.
+        		if (!timeout) {
+                    snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "%s: Message: %s", name, payload);
+                    messageIndex = (messageIndex + 1) % MAX_MESSAGES;
 
-                if (messageCount < MAX_MESSAGES) {
-                    messageCount++;
-                }
-
+                    if (messageCount < MAX_MESSAGES) {
+                        messageCount++;
+                    }
+        		}
         	}
 
             xSemaphoreGive(xMutex);
+            vTaskDelay(10 / portTICK_PERIOD_MS);
 
         }
 	}
@@ -537,6 +555,8 @@ void transmit(uint8_t flag) {
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   SpiritIrqs xIrqStatus;
+  BaseType_t xHigherPriorityTaskWoken = pdTRUE;  // Variable to check if a context switch is required
+
 
   if (GPIO_Pin != SPIRIT1_GPIO3_Pin)
   {
@@ -562,14 +582,19 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
       {
           SpiritCmdStrobeRx();
       }
-    SpiritIrqClearStatus();
+      SpiritIrqClearStatus();
   }
   if (xIrqStatus.IRQ_RX_TIMEOUT)
   {
 //      if (!isAborting) // Check if the abort process is happening
 //      {
-	  SpiritCmdStrobeRx();
+//      xSemaphoreGiveFromISR(xMutex);
+	  xRxDoneFlag = S_SET;
+	  timeout = 1;
+
+//	  SpiritCmdStrobeRx();
 	  SpiritIrqClearStatus();
+
 
   }
 }
