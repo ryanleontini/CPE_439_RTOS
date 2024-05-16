@@ -44,8 +44,9 @@ extern UART_HandleTypeDef huart2;
 #define STACK_SIZE 512
 #define TIMER_PERIOD_MS 5000 // 30 seconds in milliseconds
 
-#define MAX_MESSAGES 30
+#define MAX_MESSAGES 10
 #define MAX_MESSAGE_LENGTH 50
+#define MAX_USERNAME_LEN 21
 
 
 /* USER CODE END PTD */
@@ -96,6 +97,7 @@ void heartBeatTask(void);
 void getSpirit1State(void);
 void vTimerCallback(TimerHandle_t xTimer);
 void initTerminal(void);
+void transmitToUART (char *message);
 
 /* USER CODE END PFP */
 
@@ -144,7 +146,6 @@ int main(void)
   initNodesArray();
 
   initTerminal();
-  clearScreen();
 
   /* USER CODE END 2 */
 
@@ -503,17 +504,15 @@ void transmitMessages(void) {
     char cursor[20]; // Buffer for cursor position string
 
     // Start from row 1 and column 41 (adjust row start if needed)
-    int startRow = 1;
+    int startRow = 32;
+
 
 	for (int i = 0; i < messageCount; i++) {
+	    int maxMessages = MAX_MESSAGES - i;
 		// Calculate cursor position for the current message
-		snprintf(cursor, sizeof(cursor), "\x1B[%d;41H", startRow + i);
+		snprintf(cursor, sizeof(cursor), "\x1B[%d;1H", startRow - i);
 		length = strlen(cursor);
-
-		// Move the cursor to the calculated position
 		HAL_UART_Transmit(&huart2, (uint8_t *)cursor, length, 100);
-
-		// Transmit the message
 		HAL_UART_Transmit(&huart2, (uint8_t *)messageBuffer[i], strlen(messageBuffer[i]), HAL_MAX_DELAY);
 	}
 
@@ -544,6 +543,57 @@ void transmit(uint8_t flag) {
 
 void initTerminal(void) {
 
+    char *cursorHome = "\x1B[H";
+    char *cursorSecondRow = "\x1B[2H";
+    char *cursorThirdRow = "\x1B[3H";
+
+    char *terminalHome = "\x1B[20H";
+    char *terminalSecondRow = "\x1B[21H";
+    char *terminalThirdRow = "\x1B[22H";
+
+    char *messageHome = "\x1B[33H";
+    char *messageSecondRow = "\x1B[34H";
+    char *messageThirdRow = "\x1B[35H";
+
+	clearScreen();
+
+	/* Users Online */
+    char *header = "---------------------------------------------------------------------------------------------";
+    char *message = "Users Online";
+
+	transmitToUART(cursorHome);
+	transmitToUART(header);
+	transmitToUART(cursorSecondRow);
+	transmitToUART(message);
+	transmitToUART(cursorThirdRow);
+	transmitToUART(header);
+
+	/* Terminal */
+    char *termMessage = "Terminal";
+
+	transmitToUART(terminalHome);
+	transmitToUART(header);
+	transmitToUART(terminalSecondRow);
+	transmitToUART(termMessage);
+	transmitToUART(terminalThirdRow);
+	transmitToUART(header);
+
+	/* Inbox */
+    char *inboxMessage = "Inbox";
+
+	transmitToUART(messageHome);
+	transmitToUART(header);
+	transmitToUART(messageSecondRow);
+	transmitToUART(inboxMessage);
+	transmitToUART(messageThirdRow);
+	transmitToUART(header);
+
+}
+
+void transmitToUART (char *message) {
+    uint16_t length;
+    length = strlen(message);
+    HAL_UART_Transmit(&huart2, (uint8_t *)message, length, 100);
 }
 
 
