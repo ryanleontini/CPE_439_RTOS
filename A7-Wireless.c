@@ -50,7 +50,7 @@ extern UART_HandleTypeDef huart2;
 #define MAX_MESSAGE_LENGTH 50
 #define MAX_USERNAME_LEN 21
 
-#define HEARTBEAT 30000
+#define HEARTBEAT 3000
 
 #define MAX_USERNAME 21
 #define MAX_MESSAGE 250
@@ -91,8 +91,10 @@ volatile uint16_t rxIndex = 0;
 int broadcastFlag = 0;
 int stepFlag = 0;
 
-txUSER[MAX_USERNAME];
-txMESSAGE[MAX_MESSAGE];
+char txUSER[MAX_USERNAME];
+char txMESSAGE[MAX_MESSAGE];
+
+int transmitReadyFlag = 0;
 
 //TimerHandle_t x30SecondTimer;
 xSemaphoreHandle xMutex;
@@ -120,6 +122,7 @@ void getSpirit1State(void);
 void vTimerCallback(TimerHandle_t xTimer);
 void initTerminal(void);
 void transmitToUART (char *message);
+void transmitTask(void);
 
 /* USER CODE END PFP */
 
@@ -189,10 +192,10 @@ int main(void)
       while(1);
   }
 
-  if (xTaskCreate(receive, "receive", STACK_SIZE, NULL, tskIDLE_PRIORITY + 1, &xReceiveTaskHandle) != pdPASS){ while(1); }
+  if (xTaskCreate(receive, "receive", STACK_SIZE, NULL, tskIDLE_PRIORITY + 2, &xReceiveTaskHandle) != pdPASS){ while(1); }
   if (xTaskCreate(updateNodesTable, "updateNodes", STACK_SIZE, NULL, tskIDLE_PRIORITY + 4, &updateNodesTableHandle) != pdPASS){ while(1); }
-  if (xTaskCreate(heartBeatTask, "heartbeat", STACK_SIZE, NULL, tskIDLE_PRIORITY + 0, &heartBeatTaskHandle) != pdPASS){ while(1); }
-//  if (xTaskCreate(transmitTask, "transmit", STACK_SIZE, NULL, tskIDLE_PRIORITY + 0, &xReceiveTaskHandle) != pdPASS){ while(1); }
+  if (xTaskCreate(heartBeatTask, "heartbeat", STACK_SIZE, NULL, tskIDLE_PRIORITY + 1, &heartBeatTaskHandle) != pdPASS){ while(1); }
+  if (xTaskCreate(transmitTask, "transmit", STACK_SIZE, NULL, tskIDLE_PRIORITY + 0, &xReceiveTaskHandle) != pdPASS){ while(1); }
 
   /* Start scheduler */
   osKernelStart();
@@ -352,6 +355,10 @@ void receive(void) {
 	}
 
 	while(1) {
+		if (transmitReadyFlag) {
+            xSemaphoreGive(xMutex);
+            vTaskDelay(10 / portTICK_PERIOD_MS);
+		}
         if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
 
 //			char payload[20];
@@ -523,12 +530,15 @@ void USART2_IRQHandler(void) {
         	   if (rxBuffer[0] == 'b') {
         		   broadcastFlag = 1;
         	   }
-        	   else {
+        	   else if (rxBuffer[0] == 'b') {
         		   broadcastFlag = 0;
         	   }
         	   stepFlag = 1;
         	   /* Clear line */
-               clearInput();
+               clearInput(40);
+               transmitUserCommand("Please enter your username:");
+
+               /* New terminal command */
 
            }
            /* Username entered */
@@ -537,7 +547,8 @@ void USART2_IRQHandler(void) {
                strncpy(txUSER, rxBuffer, MAX_USERNAME - 1);
                txUSER[strlen(rxBuffer)] = '\0'; // Ensure null termination
                stepFlag = 2;
-               clearInput();
+               clearInput(40);
+               transmitUserCommand("Please a message:");
            }
            /* Message entered */
            else if (stepFlag == 2) {
@@ -547,11 +558,11 @@ void USART2_IRQHandler(void) {
 
         	   stepFlag = 0;
                rxIndex = 0; // Reset index for new input
-               USART2->ISR &= ~(USART_ISR_RXNE);  // Clear the RXNE flag
-               clearInput();
+               clearInput(40);
+               transmitUserCommand("Please enter b (broadcast) or m (message):");
 
                /* Run TX Task */
-               xSemaphoreGive(xMutex);
+               transmitReadyFlag = 1;
            }
 
            // Process the received command
@@ -571,9 +582,13 @@ void USART2_IRQHandler(void) {
    }
 }
 
-void clearInput(void) {
+void clearInput(int line) {
     char cursorPosition[10];
-    snprintf(cursorPosition, sizeof(cursorPosition), "\x1B[%d;1H\x1B[K", 40);
+    snprintf(cursorPosition, sizeof(cursorPosition), "\x1B[%d;H", line);
+    HAL_UART_Transmit(&huart2, (uint8_t *)cursorPosition, strlen(cursorPosition), HAL_MAX_DELAY);
+
+    cursorPosition[10];
+    snprintf(cursorPosition, sizeof(cursorPosition), "\x1b[K");
     HAL_UART_Transmit(&huart2, (uint8_t *)cursorPosition, strlen(cursorPosition), HAL_MAX_DELAY);
 }
 
@@ -583,20 +598,33 @@ void clearInput(void) {
 //	transmitMessage(4);
 //}
 
-//void transmitTask(void) {
-//	while (1) {
-//	    if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
-//	    	/* If broadcast */
-//	    	if () {
-//
-//	    	}
-//
-//
-//	        xSemaphoreGive(xMutex);
-//
-//	    }
-//	}
-//}
+void transmitTask(void) {
+	while (1) {
+		if (transmitReadyFlag) {
+		    if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
+		    	/* If broadcast */
+		    	if (broadcastFlag) {
+		    		SpiritPktStackSetDestinationAddress(0xFF); // Broadcast
+		    		transmit(4, txUSER);
+		    	} else {
+		    		/* Get hex from username */
+		    		SpiritPktStackSetDestinationAddress(0xFF); // User
+		    		transmit(4, txUSER);
+		    		SpiritPktStackSetDestinationAddress(0xFF);
+		    	}
+
+                snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "%s: Message: %s", txUSER, txMESSAGE);
+                messageIndex = (messageIndex + 1) % MAX_MESSAGES;
+
+                if (messageCount < MAX_MESSAGES) {
+                    messageCount++;
+                }
+                transmitReadyFlag = 0;
+		        xSemaphoreGive(xMutex);
+		    }
+		}
+	}
+}
 
 void transmit(uint8_t flag, char *username) {
 
@@ -683,6 +711,12 @@ void transmitToUART (char *message) {
     HAL_UART_Transmit(&huart2, (uint8_t *)message, length, 100);
 }
 
+void transmitUserCommand(char *message) {
+    char *inputMessageHome = "\x1B[39H";
+    clearInput(39);
+	transmitToUART(inputMessageHome);
+	transmitToUART(message);
+}
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
