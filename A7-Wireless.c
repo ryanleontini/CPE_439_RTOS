@@ -144,6 +144,41 @@ int main(void)
   SpiritPktStackSetDestinationAddress(0xFF); // Me
 
   initNodesArray();
+//  addNode(0x1, "John");
+//  addNode(0x2, "Jack");
+//  addNode(0x3, "Alice");
+//  addNode(0x4, "Bob");
+//  addNode(0x5, "Charlie");
+//  addNode(0x6, "David");
+//  addNode(0x7, "Eve");
+//  addNode(0x8, "Frank");
+//  HAL_Delay(1000);
+//  addNode(0x9, "Grace");
+//  addNode(0xA, "Hank");
+//  addNode(0xB, "Ivy");
+//  addNode(0xC, "Jake");
+//  addNode(0xD, "Kate");
+//  addNode(0xE, "Leo");
+//  addNode(0xF, "Mia");
+//  addNode(0x10, "Nina");
+//  addNode(0x11, "Oscar");
+//  addNode(0x12, "Paul");
+//  addNode(0x13, "Quinn");
+//  addNode(0x14, "Ray");
+//  addNode(0x15, "Sara");
+//  addNode(0x16, "Tom");
+//  addNode(0x17, "Uma");
+//  addNode(0x18, "Vera");
+//  addNode(0x19, "Will");
+//  addNode(0x1A, "Xena");
+//  addNode(0x1B, "Yara");
+//  addNode(0x1C, "Zane");
+//  addNode(0x1D, "Alex");
+//  addNode(0x1E, "Bella");
+//  addNode(0x1F, "Cody");
+//  addNode(0x20, "Dora");
+//  addNode(0x21, "Eli");
+//  addNode(0x22, "Faye");
 
   initTerminal();
 
@@ -171,28 +206,6 @@ int main(void)
   if (xTaskCreate(receive, "receive", STACK_SIZE, NULL, tskIDLE_PRIORITY + 1, &xReceiveTaskHandle) != pdPASS){ while(1); }
   if (xTaskCreate(heartBeatTask, "heartbeat", STACK_SIZE, NULL, tskIDLE_PRIORITY + 0, NULL) != pdPASS){ while(1); }
 
-//  if (xTaskCreate(transmit, "transmit", STACK_SIZE, NULL, tskIDLE_PRIORITY + 0, &xReceiveTaskHandle) != pdPASS){ while(1); }
-//  x30SecondTimer = xTimerCreate("30SecondTimer", pdMS_TO_TICKS(TIMER_PERIOD_MS), pdTRUE, (void *)0, vTimerCallback);
-
-
-//  if (x30SecondTimer == NULL)
-//  {
-//      // The timer was not created
-//      printf("Timer creation failed.\n");
-//      while (1);
-//  }
-//  else
-//  {
-//      // Start the timer
-//      if (xTimerStart(x30SecondTimer, 0) != pdPASS)
-//      {
-//          // The timer could not be started
-//          printf("Timer start failed.\n");
-//          while (1);
-//      }
-//  }
-  /* Heartbeat task */
-
   /* Start scheduler */
   osKernelStart();
 
@@ -205,12 +218,6 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-//	  receive();
-//	  transmit();
-
-//	  displayNodesTable();
-//	  HAL_Delay(1000);
-//	  transmit();
 
     /* USER CODE BEGIN 3 */
 
@@ -269,44 +276,15 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
-void getSpirit1State(void) {
-    // Read the status register
-//	uint8_t status;
-//    StatusBytes spiritStatus = SpiritSpiReadRegisters(MC_STATE0_BASE, 1, &status);
-
-    SpiritStatus currentStatus;
-    SpiritSpiReadRegisters(MC_STATE0_BASE, 1, (uint8_t *)&currentStatus);
-
-    //    currentStatus.MC_STATE = (spiritStatus.Status & 0x70) >> 4; // Extract the relevant bits
-
-    // Initialize other fields if necessary
-//    uint8_t stateBits = currentStatus.MC_STATE; // Assuming MC_STATE gives the state bits (consult the datasheet)
-
-//    return currentStatus.MC_STATE;
-}
-
-void vTimerCallback(TimerHandle_t xTimer)
-{
-    // Call the transmit function
-	isAborting = 1;
-    SpiritCmdStrobeSabort();
-    SpiritStatus currentStatus;
-    SpiritSpiReadRegisters(MC_STATE0_BASE, 1, &currentStatus);
-    transmit(3);
-	isAborting = 0;
-
-    printf("Transmit function called by timer.\n");
-}
-
 
 void heartBeatTask(void) {
 	while(1) {
-		const TickType_t xDelay = 5000 / portTICK_PERIOD_MS; // 10s delay
+		const TickType_t xDelay = 2000 / portTICK_PERIOD_MS; // 10s delay
 
 		vTaskDelay( xDelay );
 
         if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
-
+//            memset(messageBuffer[messageIndex], 0, MAX_MESSAGE_LENGTH);
 
 			transmit(3);
 
@@ -328,6 +306,25 @@ void receive(void) {
     /* Receive */
 
 	if (initialTransmit == 0) {
+
+//		  addNode(0x1, "John");
+//		  addNode(0x2, "Jack");
+//		  addNode(0x3, "Alice");
+//		  addNode(0x4, "Bob");
+//		  addNode(0x5, "Charlie");
+//		  addNode(0x6, "David");
+//		  addNode(0x7, "Eve");
+//		  addNode(0x8, "Frank");
+//		  HAL_Delay(3000);
+//		  addNode(0x9, "Grace");
+//		  addNode(0xA, "Hank");
+//		  addNode(0xB, "Ivy");
+//		  addNode(0xC, "Jake");
+//		  addNode(0xD, "Kate");
+//		  addNode(0xE, "Leo");
+//		  addNode(0xF, "Mia");
+//		  addNode(0x10, "Nina");
+
 		uint8_t flag = 1;
     	transmit(flag);
 
@@ -371,6 +368,7 @@ void receive(void) {
 
 	while(1) {
         if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
+//            memset(messageBuffer[messageIndex], 0, MAX_MESSAGE_LENGTH);
 
 //			char payload[20];
 			uint16_t length;
@@ -503,23 +501,18 @@ void transmitMessages(void) {
     uint16_t length;
     char cursor[20]; // Buffer for cursor position string
 
-    // Start from row 1 and column 41 (adjust row start if needed)
-    int startRow = 32;
+    // Start from row 32 and clear 11 rows upwards
+    int startRow = 33;
+    clearText(startRow - 10, 11);
 
-
-	for (int i = 0; i < messageCount; i++) {
-	    int maxMessages = MAX_MESSAGES - i;
-		// Calculate cursor position for the current message
-		snprintf(cursor, sizeof(cursor), "\x1B[%d;1H", startRow - i);
-		length = strlen(cursor);
-		HAL_UART_Transmit(&huart2, (uint8_t *)cursor, length, 100);
-		HAL_UART_Transmit(&huart2, (uint8_t *)messageBuffer[i], strlen(messageBuffer[i]), HAL_MAX_DELAY);
-	}
-
+    for (int i = 0; i < messageCount; i++) {
+        // Calculate cursor position for the current message
+        snprintf(cursor, sizeof(cursor), "\x1B[%d;1H", startRow - (messageCount - 1 - i));
+        length = strlen(cursor);
+        HAL_UART_Transmit(&huart2, (uint8_t *)cursor, length, 100);
+        HAL_UART_Transmit(&huart2, (uint8_t *)messageBuffer[i], strlen(messageBuffer[i]), HAL_MAX_DELAY);
+    }
 }
-
-
-
 
 void transmit(uint8_t flag) {
 
@@ -547,46 +540,48 @@ void initTerminal(void) {
     char *cursorSecondRow = "\x1B[2H";
     char *cursorThirdRow = "\x1B[3H";
 
-    char *terminalHome = "\x1B[20H";
-    char *terminalSecondRow = "\x1B[21H";
-    char *terminalThirdRow = "\x1B[22H";
+    char *terminalHome = "\x1B[21H";
+    char *terminalSecondRow = "\x1B[22H";
+    char *terminalThirdRow = "\x1B[23H";
 
-    char *messageHome = "\x1B[33H";
-    char *messageSecondRow = "\x1B[34H";
-    char *messageThirdRow = "\x1B[35H";
+    char *messageHome = "\x1B[34H";
+    char *messageSecondRow = "\x1B[35H";
+    char *messageThirdRow = "\x1B[36H";
 
 	clearScreen();
 
 	/* Users Online */
-    char *header = "---------------------------------------------------------------------------------------------";
+    char *dash = "---------------------------------------------------------------------------------------------";
+    char *userHeader = "Username             | Addr | Status   | HB  | Username             | Addr | Status   | HB  ";
+
     char *message = "Users Online";
 
 	transmitToUART(cursorHome);
-	transmitToUART(header);
+	transmitToUART(dash);
 	transmitToUART(cursorSecondRow);
-	transmitToUART(message);
+	transmitToUART(userHeader);
 	transmitToUART(cursorThirdRow);
-	transmitToUART(header);
+	transmitToUART(dash);
 
 	/* Terminal */
     char *termMessage = "Terminal";
 
 	transmitToUART(terminalHome);
-	transmitToUART(header);
+	transmitToUART(dash);
 	transmitToUART(terminalSecondRow);
 	transmitToUART(termMessage);
 	transmitToUART(terminalThirdRow);
-	transmitToUART(header);
+	transmitToUART(dash);
 
 	/* Inbox */
     char *inboxMessage = "Inbox";
 
 	transmitToUART(messageHome);
-	transmitToUART(header);
+	transmitToUART(dash);
 	transmitToUART(messageSecondRow);
 	transmitToUART(inboxMessage);
 	transmitToUART(messageThirdRow);
-	transmitToUART(header);
+	transmitToUART(dash);
 
 }
 
@@ -692,3 +687,5 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
+
+
