@@ -16,7 +16,7 @@ extern UART_HandleTypeDef huart2;
 
 #define TOTAL_NODES 17
 #define MAX_NODES 256
-#define TIME_UNTIL_DEATH 20
+#define TIME_UNTIL_DEATH 110
 
 typedef struct {
     uint8_t hexValue;
@@ -89,6 +89,12 @@ void initNodesArray() {
 
 int addNode(uint8_t address, const char *name) {
 //    if (nodes[address].name[0] == '\0') {  // Check if the slot is unused
+
+    if (address < 0 || address > 255) {
+    	/* Message out? */
+        return -1;  // Invalid address
+    }
+
         strncpy(nodes[address].name, name, MAX_NAME_LEN - 1);
         nodes[address].name[MAX_NAME_LEN - 1] = '\0';
         sprintf(nodes[address].address, "%X", address);  // Format address as hex string
@@ -141,7 +147,7 @@ void displayNodesTable(void) {
     for (int i = 0; i < MAX_NODES; i++) {
         // Check if the node name is not empty
         if (nodes[i].name[0] != '\0') {
-            snprintf(buffer, sizeof(buffer), "%-20s | %-4s | Online   | %4d\r\n",
+            snprintf(buffer, sizeof(buffer), "%-20s | 0x%-2s | Online   | %4d\r\n",
                      nodes[i].name, nodes[i].address, nodes[i].lastHeartbeat);
             length = strlen(buffer);
             HAL_UART_Transmit(&huart2, (uint8_t *)buffer, length, 100);
