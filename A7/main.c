@@ -50,7 +50,7 @@ extern UART_HandleTypeDef huart2;
 #define MAX_MESSAGE_LENGTH 50
 #define MAX_USERNAME_LEN 21
 
-#define HEARTBEAT 3000
+#define HEARTBEAT 10000
 
 #define MAX_USERNAME 21
 #define MAX_MESSAGE 250
@@ -360,10 +360,10 @@ void receive(void) {
 	}
 
 	while(1) {
-		if (transmitReadyFlag) {
-            xSemaphoreGive(xMutex);
-            vTaskDelay(10 / portTICK_PERIOD_MS);
-		}
+//		if (transmitReadyFlag) {
+//            xSemaphoreGive(xMutex);
+//            vTaskDelay(10 / portTICK_PERIOD_MS);
+//		}
         if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
 
 //			char payload[20];
@@ -544,10 +544,13 @@ void transmitMessages(void) {
 
     for (int i = 0; i < messageCount; i++) {
         // Calculate cursor position for the current message
-        snprintf(cursor, sizeof(cursor), "\x1B[%d;1H", startRow - (messageCount - 1 - i));
+        snprintf(cursor, sizeof(cursor), "\x1B[%d;1H", startRow - i);
         length = strlen(cursor);
         HAL_UART_Transmit(&huart2, (uint8_t *)cursor, length, 100);
-        HAL_UART_Transmit(&huart2, (uint8_t *)messageBuffer[i], strlen(messageBuffer[i]), HAL_MAX_DELAY);
+
+        int index = (messageIndex - 1 - i + MAX_MESSAGES) % MAX_MESSAGES;
+
+        HAL_UART_Transmit(&huart2, (uint8_t *)messageBuffer[index], strlen(messageBuffer[index]), HAL_MAX_DELAY);
     }
 }
 
