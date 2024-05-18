@@ -46,12 +46,17 @@ extern UART_HandleTypeDef huart2;
 #define STACK_SIZE 512
 #define TIMER_PERIOD_MS 5000 // 30 seconds in milliseconds
 
-#define MAX_MESSAGES 10
+#define MAX_MESSAGES 13
 #define MAX_MESSAGE_LENGTH 50
 #define MAX_USERNAME_LEN 21
 
 #define HEARTBEAT 3000
 
+#define MAX_USERNAME 21
+#define MAX_MESSAGE 250
+#define USERNAME "DJ_CHILL"
+
+#define CHATLINE 40
 
 /* USER CODE END PTD */
 
@@ -76,8 +81,22 @@ TaskHandle_t updateNodesTableHandle = NULL;
 TaskHandle_t heartBeatTaskHandle = NULL;
 
 char messageBuffer[MAX_MESSAGES][MAX_MESSAGE_LENGTH];
-int messageCount = 0;
-int messageIndex = 0; // To track the current message to be transmitted
+volatile int messageCount = 0;
+volatile int messageIndex = 0; // To track the current message to be transmitted
+char receivedChar;
+int receivedFlag;
+
+#define RX_BUFFER_SIZE 250
+char rxBuffer[RX_BUFFER_SIZE];
+volatile uint16_t rxIndex = 0;
+
+int broadcastFlag = 0;
+int stepFlag = 0;
+
+char txUSER[MAX_USERNAME];
+char txMESSAGE[MAX_MESSAGE];
+
+int transmitReadyFlag = 0;
 
 //TimerHandle_t x30SecondTimer;
 xSemaphoreHandle xMutex;
@@ -88,6 +107,7 @@ int initialTransmit = 0;
 volatile int isAborting = 0;
 int firstACK = 0;
 int timeout = 0;
+int heartbeatCount = 0;
 
 /* USER CODE END PV */
 
@@ -97,7 +117,7 @@ void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
 void Spirit_Register_Init(void);
 void updateNodesTable(void);
-void transmit(uint8_t flag);
+void transmit(uint8_t flag, char *username);
 void receive(void);
 void clearScreen(void);
 void heartBeatTask(void);
@@ -105,6 +125,7 @@ void getSpirit1State(void);
 void vTimerCallback(TimerHandle_t xTimer);
 void initTerminal(void);
 void transmitToUART (char *message);
+void transmitTask(void);
 
 /* USER CODE END PFP */
 
@@ -126,7 +147,8 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
+
+	HAL_Init();
 
   /* USER CODE BEGIN Init */
   __enable_irq();
@@ -174,31 +196,10 @@ int main(void)
       while(1);
   }
 
-  if (xTaskCreate(receive, "receive", STACK_SIZE, NULL, tskIDLE_PRIORITY + 1, &xReceiveTaskHandle) != pdPASS){ while(1); }
+  if (xTaskCreate(receive, "receive", STACK_SIZE, NULL, tskIDLE_PRIORITY + 2, &xReceiveTaskHandle) != pdPASS){ while(1); }
   if (xTaskCreate(updateNodesTable, "updateNodes", STACK_SIZE, NULL, tskIDLE_PRIORITY + 4, &updateNodesTableHandle) != pdPASS){ while(1); }
-  if (xTaskCreate(heartBeatTask, "heartbeat", STACK_SIZE, NULL, tskIDLE_PRIORITY + 0, &heartBeatTaskHandle) != pdPASS){ while(1); }
-
-//  if (xTaskCreate(transmit, "transmit", STACK_SIZE, NULL, tskIDLE_PRIORITY + 0, &xReceiveTaskHandle) != pdPASS){ while(1); }
-//  x30SecondTimer = xTimerCreate("30SecondTimer", pdMS_TO_TICKS(TIMER_PERIOD_MS), pdTRUE, (void *)0, vTimerCallback);
-
-
-//  if (x30SecondTimer == NULL)
-//  {
-//      // The timer was not created
-//      printf("Timer creation failed.\n");
-//      while (1);
-//  }
-//  else
-//  {
-//      // Start the timer
-//      if (xTimerStart(x30SecondTimer, 0) != pdPASS)
-//      {
-//          // The timer could not be started
-//          printf("Timer start failed.\n");
-//          while (1);
-//      }
-//  }
-  /* Heartbeat task */
+  if (xTaskCreate(heartBeatTask, "heartbeat", STACK_SIZE, NULL, tskIDLE_PRIORITY + 1, &heartBeatTaskHandle) != pdPASS){ while(1); }
+  if (xTaskCreate(transmitTask, "transmit", STACK_SIZE, NULL, tskIDLE_PRIORITY + 0, &xReceiveTaskHandle) != pdPASS){ while(1); }
 
   /* Start scheduler */
   osKernelStart();
@@ -289,9 +290,10 @@ void heartBeatTask(void) {
         if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
 
 
-			transmit(3);
+			transmit(3, USERNAME);
 
-            snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "Heartbeat Sent.");
+			heartbeatCount++;
+            snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "Heartbeat %d Sent.", heartbeatCount);
             messageIndex = (messageIndex + 1) % MAX_MESSAGES;
 
             if (messageCount < MAX_MESSAGES) {
@@ -315,7 +317,7 @@ void receive(void) {
 		uint16_t length;
 		uint8_t rxLen;
 		for (int i = 0; i < 10; i++) {
-	    	transmit(1);
+	    	transmit(1, USERNAME);
 			SpiritCmdStrobeRx();
 			while (!xRxDoneFlag);
 
@@ -358,6 +360,10 @@ void receive(void) {
 	}
 
 	while(1) {
+		if (transmitReadyFlag) {
+            xSemaphoreGive(xMutex);
+            vTaskDelay(10 / portTICK_PERIOD_MS);
+		}
         if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
 
 //			char payload[20];
@@ -373,17 +379,24 @@ void receive(void) {
 
 			while (!xRxDoneFlag);
 
+			if (timeout) {
+	            xSemaphoreGive(xMutex);
+	            vTaskDelay(10 / portTICK_PERIOD_MS);
+				continue;
+			}
+
 			uint8_t sourceAddress;
 			sourceAddress = SpiritPktStackGetReceivedSourceAddress();
 			char* name = getNameFromHex(sourceAddress);
 
-			if (!timeout) {
-				addNode(sourceAddress, name);
+			addNode(sourceAddress, name);
 
-//	            xSemaphoreGive(xMutex);
-//				break;
+			uint8_t destAddress = SpiritPktStackGetReceivedDestAddress();
+			if (destAddress != 0xFF && destAddress != MY_ADDRESS) {
+                xSemaphoreGive(xMutex);
+                vTaskDelay(10 / portTICK_PERIOD_MS);
+				continue;
 			}
-
 
             char payload[MAX_MESSAGE_LENGTH];
             rxLen = SPSGRF_GetRxData(payload);
@@ -400,13 +413,13 @@ void receive(void) {
     			sourceAddress = SpiritPktStackGetReceivedSourceAddress();
     			char* name = getNameFromHex(sourceAddress);
 
-        		SpiritPktStackSetDestinationAddress(name);
+        		SpiritPktStackSetDestinationAddress(sourceAddress);
 
-        		transmit(2);
+        		transmit(2, USERNAME);
 
         		SpiritPktStackSetDestinationAddress(0xFF);
 
-                 snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "Announcement received from: %s", name);
+                snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "Announcement received from: %s", name);
                 // Store the message in the buffer, overwriting the oldest if necessary
                 messageIndex = (messageIndex + 1) % MAX_MESSAGES;
 
@@ -433,6 +446,27 @@ void receive(void) {
                 if (messageCount < MAX_MESSAGES) {
                     messageCount++;
                 }
+            }
+        	else if (payload[0] == 4) {
+				if (destAddress == 0xFF) {
+					snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "\x1B[32m\x1B[47m%s: Broadcast: %s\x1B[0m", name, payload);
+
+	                // Store the message in the buffer, overwriting the oldest if necessary
+	                messageIndex = (messageIndex + 1) % MAX_MESSAGES;
+
+	                if (messageCount < MAX_MESSAGES) {
+	                    messageCount++;
+	                }
+	            /* It's my address */
+				} else {
+					snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "\x1B[34m\x1B[47m%s: Message: %s\x1B[0m", name, payload);
+	                // Store the message in the buffer, overwriting the oldest if necessary
+	                messageIndex = (messageIndex + 1) % MAX_MESSAGES;
+
+	                if (messageCount < MAX_MESSAGES) {
+	                    messageCount++;
+	                }
+				}
             }
         	else {
         		// Need to stop printing on timeouts.
@@ -504,9 +538,9 @@ void transmitMessages(void) {
     uint16_t length;
     char cursor[20]; // Buffer for cursor position string
 
-    // Start from row 32 and clear 11 rows upwards
-    int startRow = 32;
-    clearText(startRow - 10, 11);
+    // Start from row 35 and clear 13 rows upwards
+    int startRow = 35;
+    clearText(startRow - 13, 14);
 
     for (int i = 0; i < messageCount; i++) {
         // Calculate cursor position for the current message
@@ -517,16 +551,134 @@ void transmitMessages(void) {
     }
 }
 
+void USART2_IRQHandler(void) {
+   if (USART2->ISR & (USART_ISR_RXNE)) {  // Check if receive not empty
+       receivedChar = USART2->RDR;  // Read received character
+	   receivedFlag = 1;
 
+       if (receivedChar == '\r' || receivedChar == '\n') {
+           rxBuffer[rxIndex] = '\0'; // Null-terminate the string
 
+           if (stepFlag == 0) {
+        	   if (rxBuffer[0] == 'b') {
+        		   broadcastFlag = 1;
+            	   stepFlag = 1;
+                   clearInput(CHATLINE);
+                   transmitUserCommand("Please enter your username:");
+        	   }
+        	   else if (rxBuffer[0] == 'm') {
+        		   broadcastFlag = 0;
+            	   stepFlag = 1;
+                   clearInput(CHATLINE);
+                   transmitUserCommand("Please enter your username:");
+        	   }
+        	   else {
+                   clearInput(CHATLINE);
+                   transmitUserCommand("Invalid command. Please try again. Enter b (broadcast) or m (message):");
+            	   stepFlag = 0;
 
-void transmit(uint8_t flag) {
+        	   }
 
-	uint8_t payload[100] = {0};
+           }
+           /* Username entered */
+           else if (stepFlag == 1) {
+        	   /* Need to error handle rxBuffer being bigger */
+               strncpy(txUSER, rxBuffer, MAX_USERNAME - 1);
+               txUSER[strlen(rxBuffer)] = '\0'; // Ensure null termination
+               stepFlag = 2;
+               clearInput(CHATLINE);
+               transmitUserCommand("Please enter a message:");
+           }
+           /* Message entered */
+           else if (stepFlag == 2) {
+
+        	   if (!broadcastFlag) {
+
+        	   }
+        	   /* Need to error handle rxBuffer being bigger */
+               strncpy(txMESSAGE, rxBuffer, MAX_MESSAGE - 1);
+               txMESSAGE[strlen(rxBuffer)] = '\0'; // Ensure null termination
+
+        	   stepFlag = 0;
+               rxIndex = 0; // Reset index for new input
+               clearInput(CHATLINE);
+               transmitUserCommand("Please enter b (broadcast) or m (message):");
+
+               /* Run TX Task */
+               transmitReadyFlag = 1;
+           }
+
+           // Process the received command
+           rxIndex = 0; // Reset index for new input
+       } else {
+           // Add the character to the buffer if there is space
+           if (rxIndex < RX_BUFFER_SIZE - 1) {
+               rxBuffer[rxIndex++] = receivedChar;
+           }
+       }
+
+       char cursorPosition[10];
+       snprintf(cursorPosition, sizeof(cursorPosition), "\x1B[40;%dH", rxIndex);
+       HAL_UART_Transmit(&huart2, (uint8_t *)cursorPosition, strlen(cursorPosition), HAL_MAX_DELAY);
+	   USART2->TDR = receivedChar;  // Echo the received character to terminal
+       USART2->ISR &= ~(USART_ISR_RXNE);  // Clear the RXNE flag
+   }
+}
+
+void clearInput(int line) {
+    char cursorPosition[10];
+    snprintf(cursorPosition, sizeof(cursorPosition), "\x1B[%d;H", line);
+    HAL_UART_Transmit(&huart2, (uint8_t *)cursorPosition, strlen(cursorPosition), HAL_MAX_DELAY);
+
+    cursorPosition[10];
+    snprintf(cursorPosition, sizeof(cursorPosition), "\x1b[K");
+    HAL_UART_Transmit(&huart2, (uint8_t *)cursorPosition, strlen(cursorPosition), HAL_MAX_DELAY);
+}
+
+void transmitTask(void) {
+	while (1) {
+		if (transmitReadyFlag) {
+		    if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
+		    	/* If broadcast */
+		    	if (broadcastFlag) {
+		    		SpiritPktStackSetDestinationAddress(0xFF); // Broadcast
+		    		transmit(4, txUSER);
+					snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "\x1B[32m\x1B[47m%s: Broadcast: %s\x1B[0m", txUSER, txMESSAGE);
+                    broadcastFlag = 0;
+		    	} else {
+		    		/* Get hex from username */
+		    		SpiritPktStackSetDestinationAddress(0xFF); // User
+		    		transmit(4, txUSER);
+					snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "\x1B[34m\x1B[47m%s: Message: %s\x1B[0m", txUSER, txMESSAGE);
+		    		SpiritPktStackSetDestinationAddress(0xFF);
+		    	}
+
+                messageIndex = (messageIndex + 1) % MAX_MESSAGES;
+
+                if (messageCount < MAX_MESSAGES) {
+                    messageCount++;
+                }
+                transmitReadyFlag = 0;
+		        xSemaphoreGive(xMutex);
+		    }
+		}
+	}
+}
+
+void transmit(uint8_t flag, char *username) {
+
+    char user[MAX_USERNAME];
+    strncpy(user, username, MAX_USERNAME - 1);
+    user[MAX_USERNAME - 1] = '\0'; // Ensure null termination
+
+	uint8_t payload[250] = {0};
 	payload[0] = flag;
 
+    strncpy((char *)&payload[1], user, sizeof(payload) - 2);
+    payload[sizeof(payload) - 1] = '\0';
+
 	xTxDoneFlag = S_RESET;
-	uint8_t txLen = 1;
+    uint8_t txLen = 1 + strlen((char *)&payload[1]) + 1; // Flag + username + null terminator
 
 	isAborting = 1;
 	SpiritCmdStrobeSabort();
@@ -541,6 +693,7 @@ void transmit(uint8_t flag) {
 }
 
 void initTerminal(void) {
+    char *resetAttributes = "\x1B[0m";
 
     char *cursorHome = "\x1B[H";
     char *cursorSecondRow = "\x1B[2H";
@@ -550,12 +703,12 @@ void initTerminal(void) {
     char *terminalSecondRow = "\x1B[21H";
     char *terminalThirdRow = "\x1B[22H";
 
-    char *messageHome = "\x1B[33H";
-    char *messageSecondRow = "\x1B[34H";
-    char *messageThirdRow = "\x1B[35H";
+    char *messageHome = "\x1B[36H";
+    char *messageSecondRow = "\x1B[37H";
+    char *messageThirdRow = "\x1B[38H";
 
 	clearScreen();
-
+	transmitToUART(resetAttributes);
 	/* Users Online */
     char *header = "---------------------------------------------------------------------------------------------";
     char *message = "Users Online";
@@ -568,7 +721,7 @@ void initTerminal(void) {
 	transmitToUART(header);
 
 	/* Terminal */
-    char *termMessage = "Terminal";
+    char *termMessage = "Console";
 
 	transmitToUART(terminalHome);
 	transmitToUART(header);
@@ -578,7 +731,7 @@ void initTerminal(void) {
 	transmitToUART(header);
 
 	/* Inbox */
-    char *inboxMessage = "Inbox";
+    char *inboxMessage = "Chat";
 
 	transmitToUART(messageHome);
 	transmitToUART(header);
@@ -586,6 +739,12 @@ void initTerminal(void) {
 	transmitToUART(inboxMessage);
 	transmitToUART(messageThirdRow);
 	transmitToUART(header);
+
+    char *inputMessageHome = "\x1B[39H";
+    char *inputMessage = "Please enter b (broadcast) or m (message):";
+
+	transmitToUART(inputMessageHome);
+	transmitToUART(inputMessage);
 
 }
 
@@ -595,6 +754,12 @@ void transmitToUART (char *message) {
     HAL_UART_Transmit(&huart2, (uint8_t *)message, length, 100);
 }
 
+void transmitUserCommand(char *message) {
+    char *inputMessageHome = "\x1B[39H";
+    clearInput(39);
+	transmitToUART(inputMessageHome);
+	transmitToUART(message);
+}
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
