@@ -173,3 +173,4 @@ void clearText(int startingRow, int numRows) {
         HAL_UART_Transmit(&huart2, (uint8_t *)column, length, 100);
     }
 }
+
