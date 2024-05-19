@@ -50,7 +50,7 @@ extern UART_HandleTypeDef huart2;
 #define MAX_MESSAGE_LENGTH 50
 #define MAX_USERNAME_LEN 21
 
-#define HEARTBEAT 10000
+#define HEARTBEAT 30000
 
 #define MAX_USERNAME 21
 #define MAX_MESSAGE 250
@@ -371,6 +371,7 @@ void receive(void) {
 			uint8_t rxLen;
 			timeout = 0;
 
+
 			SpiritCmdStrobeFlushRxFifo();
 
 			xRxDoneFlag = S_RESET;
@@ -389,8 +390,6 @@ void receive(void) {
 			sourceAddress = SpiritPktStackGetReceivedSourceAddress();
 			char* name = getNameFromHex(sourceAddress);
 
-			addNode(sourceAddress, name);
-
 			uint8_t destAddress = SpiritPktStackGetReceivedDestAddress();
 			if (destAddress != 0xFF && destAddress != MY_ADDRESS) {
                 xSemaphoreGive(xMutex);
@@ -399,12 +398,20 @@ void receive(void) {
 			}
 
             char payload[MAX_MESSAGE_LENGTH];
+            memset(payload, 0, sizeof(payload));
+
             rxLen = SPSGRF_GetRxData(payload);
 //            payload[rxLen] = '\0'; // Ensure null-termination
 
             // Extract username
             char* receivedUsername = (char*)&payload[1];
             size_t usernameLength = strlen(receivedUsername);
+
+            if (usernameLength == 0) {
+                snprintf(receivedUsername, sizeof(payload) - 1, "%02X", sourceAddress);
+            }
+
+			addNode(sourceAddress, receivedUsername);
 
             // Extract message
             char* receivedMessage = (char*)&payload[1 + usernameLength + 1]; // +1 for null terminator
@@ -418,6 +425,7 @@ void receive(void) {
         		// Transmit
     			uint8_t sourceAddress;
     			sourceAddress = SpiritPktStackGetReceivedSourceAddress();
+
     			char* name = getNameFromHex(sourceAddress);
 
         		SpiritPktStackSetDestinationAddress(sourceAddress);
@@ -578,10 +586,10 @@ void USART2_IRQHandler(void) {
         	   }
         	   else if (rxBuffer[0] == 'm') {
         		   broadcastFlag = 0;
-            	   stepFlag = 1;
+            	   stepFlag = 2;
                    clearInput(CHATLINE);
 //                   transmitUserCommand("Please enter your username:");
-                   transmitUserCommand("Please enter a message:");
+                   transmitUserCommand("Please enter a username to send to:");
 
         	   }
         	   else {
@@ -598,10 +606,6 @@ void USART2_IRQHandler(void) {
                strncpy(txMESSAGE, rxBuffer, MAX_MESSAGE - 1);
                txMESSAGE[strlen(rxBuffer)] = '\0'; // Ensure null termination
 //               clearInput(CHATLINE);
-
-        	   if (!broadcastFlag) {
-
-        	   }
         	   /* Need to error handle rxBuffer being bigger */
 //               strncpy(txMESSAGE, rxBuffer, MAX_MESSAGE - 1);
 //               txMESSAGE[strlen(rxBuffer)] = '\0'; // Ensure null termination
@@ -616,8 +620,11 @@ void USART2_IRQHandler(void) {
            }
            /* Message entered */
            else if (stepFlag == 2) {
+               strncpy(txUSER, rxBuffer, MAX_USERNAME - 1);
+               txUSER[strlen(rxBuffer)] = '\0'; // Ensure null termination
 
-
+               clearInput(CHATLINE);
+               transmitUserCommand("Please enter a message:");
            }
 
            // Process the received command
@@ -659,6 +666,8 @@ void transmitTask(void) {
                     broadcastFlag = 0;
 		    	} else {
 		    		/* Get hex from username */
+
+
 		    		SpiritPktStackSetDestinationAddress(0xFF); // User
 		    		transmit(4, USERNAME, txMESSAGE);
 					snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "\x1B[34m\x1B[47m%s: Message: %s\x1B[0m", USERNAME, txMESSAGE);
@@ -709,6 +718,9 @@ void transmit(uint8_t flag, char *username, char *message) {
 	isAborting = 1;
 	SpiritCmdStrobeSabort();
 	isAborting = 0;
+
+	// Clear message payload.
+    memset(txMESSAGE, 0, sizeof(txMESSAGE));
 
 }
 
