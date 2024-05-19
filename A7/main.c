@@ -117,7 +117,7 @@ void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
 void Spirit_Register_Init(void);
 void updateNodesTable(void);
-void transmit(uint8_t flag, char *username);
+void transmit(uint8_t flag, char *username, char *message);
 void receive(void);
 void clearScreen(void);
 void heartBeatTask(void);
@@ -290,7 +290,7 @@ void heartBeatTask(void) {
         if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
 
 
-			transmit(3, USERNAME);
+			transmit(3, USERNAME, NULL);
 
 			heartbeatCount++;
             snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "Heartbeat %d Sent.", heartbeatCount);
@@ -317,7 +317,7 @@ void receive(void) {
 		uint16_t length;
 		uint8_t rxLen;
 		for (int i = 0; i < 10; i++) {
-	    	transmit(1, USERNAME);
+	    	transmit(1, USERNAME, NULL);
 			SpiritCmdStrobeRx();
 			while (!xRxDoneFlag);
 
@@ -400,7 +400,14 @@ void receive(void) {
 
             char payload[MAX_MESSAGE_LENGTH];
             rxLen = SPSGRF_GetRxData(payload);
-            payload[rxLen] = '\0'; // Ensure null-termination
+//            payload[rxLen] = '\0'; // Ensure null-termination
+
+            // Extract username
+            char* receivedUsername = (char*)&payload[1];
+            size_t usernameLength = strlen(receivedUsername);
+
+            // Extract message
+            char* receivedMessage = (char*)&payload[1 + usernameLength + 1]; // +1 for null terminator
 
 			char *cursor = "\x1B[1;41H";
         	length = strlen(cursor);
@@ -415,7 +422,7 @@ void receive(void) {
 
         		SpiritPktStackSetDestinationAddress(sourceAddress);
 
-        		transmit(2, USERNAME);
+//        		transmit(2, USERNAME, NULL);
 
         		SpiritPktStackSetDestinationAddress(0xFF);
 
@@ -449,7 +456,7 @@ void receive(void) {
             }
         	else if (payload[0] == 4) {
 				if (destAddress == 0xFF) {
-					snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "\x1B[32m\x1B[47m%s: Broadcast: %s\x1B[0m", name, payload);
+					snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "\x1B[32m\x1B[47m%s: Broadcast: %s\x1B[0m", receivedUsername, receivedMessage);
 
 	                // Store the message in the buffer, overwriting the oldest if necessary
 	                messageIndex = (messageIndex + 1) % MAX_MESSAGES;
@@ -459,7 +466,7 @@ void receive(void) {
 	                }
 	            /* It's my address */
 				} else {
-					snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "\x1B[34m\x1B[47m%s: Message: %s\x1B[0m", name, payload);
+					snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "\x1B[34m\x1B[47m%s: Message: %s\x1B[0m", receivedUsername, receivedMessage);
 	                // Store the message in the buffer, overwriting the oldest if necessary
 	                messageIndex = (messageIndex + 1) % MAX_MESSAGES;
 
@@ -567,13 +574,15 @@ void USART2_IRQHandler(void) {
         		   broadcastFlag = 1;
             	   stepFlag = 1;
                    clearInput(CHATLINE);
-                   transmitUserCommand("Please enter your username:");
+                   transmitUserCommand("Please enter a message:");
         	   }
         	   else if (rxBuffer[0] == 'm') {
         		   broadcastFlag = 0;
             	   stepFlag = 1;
                    clearInput(CHATLINE);
-                   transmitUserCommand("Please enter your username:");
+//                   transmitUserCommand("Please enter your username:");
+                   transmitUserCommand("Please enter a message:");
+
         	   }
         	   else {
                    clearInput(CHATLINE);
@@ -583,24 +592,19 @@ void USART2_IRQHandler(void) {
         	   }
 
            }
-           /* Username entered */
+           /* Message entered */
            else if (stepFlag == 1) {
         	   /* Need to error handle rxBuffer being bigger */
-               strncpy(txUSER, rxBuffer, MAX_USERNAME - 1);
-               txUSER[strlen(rxBuffer)] = '\0'; // Ensure null termination
-               stepFlag = 2;
-               clearInput(CHATLINE);
-               transmitUserCommand("Please enter a message:");
-           }
-           /* Message entered */
-           else if (stepFlag == 2) {
+               strncpy(txMESSAGE, rxBuffer, MAX_MESSAGE - 1);
+               txMESSAGE[strlen(rxBuffer)] = '\0'; // Ensure null termination
+//               clearInput(CHATLINE);
 
         	   if (!broadcastFlag) {
 
         	   }
         	   /* Need to error handle rxBuffer being bigger */
-               strncpy(txMESSAGE, rxBuffer, MAX_MESSAGE - 1);
-               txMESSAGE[strlen(rxBuffer)] = '\0'; // Ensure null termination
+//               strncpy(txMESSAGE, rxBuffer, MAX_MESSAGE - 1);
+//               txMESSAGE[strlen(rxBuffer)] = '\0'; // Ensure null termination
 
         	   stepFlag = 0;
                rxIndex = 0; // Reset index for new input
@@ -609,6 +613,11 @@ void USART2_IRQHandler(void) {
 
                /* Run TX Task */
                transmitReadyFlag = 1;
+           }
+           /* Message entered */
+           else if (stepFlag == 2) {
+
+
            }
 
            // Process the received command
@@ -645,14 +654,14 @@ void transmitTask(void) {
 		    	/* If broadcast */
 		    	if (broadcastFlag) {
 		    		SpiritPktStackSetDestinationAddress(0xFF); // Broadcast
-		    		transmit(4, txUSER);
-					snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "\x1B[32m\x1B[47m%s: Broadcast: %s\x1B[0m", txUSER, txMESSAGE);
+		    		transmit(4, USERNAME, txMESSAGE);
+					snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "\x1B[32m\x1B[47m%s: Broadcast: %s\x1B[0m", USERNAME, txMESSAGE);
                     broadcastFlag = 0;
 		    	} else {
 		    		/* Get hex from username */
 		    		SpiritPktStackSetDestinationAddress(0xFF); // User
-		    		transmit(4, txUSER);
-					snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "\x1B[34m\x1B[47m%s: Message: %s\x1B[0m", txUSER, txMESSAGE);
+		    		transmit(4, USERNAME, txMESSAGE);
+					snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "\x1B[34m\x1B[47m%s: Message: %s\x1B[0m", USERNAME, txMESSAGE);
 		    		SpiritPktStackSetDestinationAddress(0xFF);
 		    	}
 
@@ -668,7 +677,7 @@ void transmitTask(void) {
 	}
 }
 
-void transmit(uint8_t flag, char *username) {
+void transmit(uint8_t flag, char *username, char *message) {
 
     char user[MAX_USERNAME];
     strncpy(user, username, MAX_USERNAME - 1);
@@ -680,8 +689,16 @@ void transmit(uint8_t flag, char *username) {
     strncpy((char *)&payload[1], user, sizeof(payload) - 2);
     payload[sizeof(payload) - 1] = '\0';
 
-	xTxDoneFlag = S_RESET;
     uint8_t txLen = 1 + strlen((char *)&payload[1]) + 1; // Flag + username + null terminator
+
+    if (message != NULL) {
+        // Ensure null termination for the username within the payload
+        size_t usernameLength = strlen((char *)&payload[1]);
+        strncpy((char *)&payload[1 + usernameLength + 1], message, sizeof(payload) - (1 + usernameLength + 1) - 1);
+        txLen += strlen((char *)&payload[1 + usernameLength + 1]) + 1; // Add the length of the message and its null terminator
+    }
+
+	xTxDoneFlag = S_RESET;
 
 	isAborting = 1;
 	SpiritCmdStrobeSabort();
