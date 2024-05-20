@@ -37,6 +37,7 @@
 #include <stdint.h>
 #include "SPIRIT_Config.h"
 #include "networkTable.h"
+#include "usernames.h"
 
 /* USER CODE END Includes */
 
@@ -602,13 +603,10 @@ void USART2_IRQHandler(void) {
            }
            /* Message entered */
            else if (stepFlag == 1) {
-        	   /* Need to error handle rxBuffer being bigger */
+
                strncpy(txMESSAGE, rxBuffer, MAX_MESSAGE - 1);
                txMESSAGE[strlen(rxBuffer)] = '\0'; // Ensure null termination
-//               clearInput(CHATLINE);
         	   /* Need to error handle rxBuffer being bigger */
-//               strncpy(txMESSAGE, rxBuffer, MAX_MESSAGE - 1);
-//               txMESSAGE[strlen(rxBuffer)] = '\0'; // Ensure null termination
 
         	   stepFlag = 0;
                rxIndex = 0; // Reset index for new input
@@ -620,8 +618,11 @@ void USART2_IRQHandler(void) {
            }
            /* Message entered */
            else if (stepFlag == 2) {
+
                strncpy(txUSER, rxBuffer, MAX_USERNAME - 1);
                txUSER[strlen(rxBuffer)] = '\0'; // Ensure null termination
+               stepFlag = 1;
+
 
                clearInput(CHATLINE);
                transmitUserCommand("Please enter a message:");
@@ -661,17 +662,17 @@ void transmitTask(void) {
 		    	/* If broadcast */
 		    	if (broadcastFlag) {
 		    		SpiritPktStackSetDestinationAddress(0xFF); // Broadcast
-		    		transmit(4, USERNAME, txMESSAGE);
 					snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "\x1B[32m\x1B[47m%s: Broadcast: %s\x1B[0m", USERNAME, txMESSAGE);
-                    broadcastFlag = 0;
+		    		transmit(4, USERNAME, txMESSAGE);
+					broadcastFlag = 0;
 		    	} else {
 		    		/* Get hex from username */
+		            uint8_t txAddr = getAddressFromUsername(txUSER);
 
-
-		    		SpiritPktStackSetDestinationAddress(0xFF); // User
-		    		transmit(4, USERNAME, txMESSAGE);
+		    		SpiritPktStackSetDestinationAddress(txAddr); // User
 					snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "\x1B[34m\x1B[47m%s: Message: %s\x1B[0m", USERNAME, txMESSAGE);
-		    		SpiritPktStackSetDestinationAddress(0xFF);
+		    		transmit(4, USERNAME, txMESSAGE);
+					SpiritPktStackSetDestinationAddress(0xFF);
 		    	}
 
                 messageIndex = (messageIndex + 1) % MAX_MESSAGES;
