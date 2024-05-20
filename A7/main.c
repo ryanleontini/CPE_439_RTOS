@@ -36,7 +36,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include "SPIRIT_Config.h"
-#include "networkTable.h"
+//#include "networkTable.h"
 //#include "usernames.h"
 
 /* USER CODE END Includes */
@@ -55,7 +55,7 @@ extern UART_HandleTypeDef huart2;
 
 #define MAX_USERNAME 21
 #define MAX_MESSAGE 250
-#define USERNAME "DJCHILL"
+#define USERNAME "KamalaHarris"
 
 #define CHATLINE 40
 
@@ -173,9 +173,41 @@ int main(void)
 //  Spirit_Register_Init();
   SpiritPktStackSetDestinationAddress(0xFF); // Me
 
-  initNodesArray();
+//  initNodesArray();
 
   initTerminal();
+
+//  addEntryToUsernameTable(0x01, "Alice");
+//  addEntryToUsernameTable(0x02, "Bob");
+//  addEntryToUsernameTable(0x03, "Charlie");
+//  addEntryToUsernameTable(0x04, "David");
+//  addEntryToUsernameTable(0x05, "Eve");
+//  addEntryToUsernameTable(0x06, "Frank");
+//  addEntryToUsernameTable(0x07, "Grace");
+//  addEntryToUsernameTable(0x08, "Heidi");
+//  addEntryToUsernameTable(0x09, "Ivan");
+//  addEntryToUsernameTable(0x0A, "Judy");
+//  addEntryToUsernameTable(0x0B, "Mallory");
+//  addEntryToUsernameTable(0x0C, "Oscar");
+//  addEntryToUsernameTable(0x0D, "Peggy");
+//  addEntryToUsernameTable(0x0E, "Sybil");
+//  addEntryToUsernameTable(0x0F, "Trent");
+//  addEntryToUsernameTable(0x10, "Victor");
+//  addEntryToUsernameTable(0x11, "Walter");
+//  addEntryToUsernameTable(0x12, "Xavier");
+//  addEntryToUsernameTable(0x13, "Yvonne");
+//  addEntryToUsernameTable(0x14, "Zara");
+//  addEntryToUsernameTable(0x15, "Quinn");
+//  addEntryToUsernameTable(0x16, "Ruth");
+//  addEntryToUsernameTable(0x17, "Sam");
+//  addEntryToUsernameTable(0x18, "Tina");
+//  addEntryToUsernameTable(0x19, "Uma");
+//  addEntryToUsernameTable(0x1A, "Vera");
+//  addEntryToUsernameTable(0x1B, "Wade");
+//  addEntryToUsernameTable(0x1C, "Xena");
+//  addEntryToUsernameTable(0x1D, "Yara");
+//  addEntryToUsernameTable(0x1E, "Zeke");
+
 
   /* USER CODE END 2 */
 
@@ -441,7 +473,7 @@ void receive(void) {
 
         		SpiritPktStackSetDestinationAddress(sourceAddress);
 
-//        		transmit(2, USERNAME, NULL);
+        		transmit(2, USERNAME, NULL);
 
         		SpiritPktStackSetDestinationAddress(0xFF);
 
@@ -754,7 +786,7 @@ void initTerminal(void) {
 	transmitToUART(resetAttributes);
 	/* Users Online */
     char *header = "---------------------------------------------------------------------------------------------";
-    char *message = "Users Online";
+    char *message = "Username             | Addr | HB   | Username             | Addr | HB   |";
 
 	transmitToUART(cursorHome);
 	transmitToUART(header);
