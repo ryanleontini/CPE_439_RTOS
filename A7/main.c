@@ -37,7 +37,7 @@
 #include <stdint.h>
 #include "SPIRIT_Config.h"
 #include "networkTable.h"
-#include "usernames.h"
+//#include "usernames.h"
 
 /* USER CODE END Includes */
 
@@ -55,7 +55,7 @@ extern UART_HandleTypeDef huart2;
 
 #define MAX_USERNAME 21
 #define MAX_MESSAGE 250
-#define USERNAME "DJ_CHILL"
+#define USERNAME "DJCHILL"
 
 #define CHATLINE 40
 
@@ -324,16 +324,22 @@ void receive(void) {
 
             char payload[MAX_MESSAGE_LENGTH];
             rxLen = SPSGRF_GetRxData(payload);
+            char* receivedUsername = (char*)&payload[1];
+
             payload[rxLen] = '\0'; // Ensure null-termination
 
 	    	if (payload[0] == 2) {
 				uint8_t sourceAddress;
 				sourceAddress = SpiritPktStackGetReceivedSourceAddress();
 
-				char* name = getNameFromHex(sourceAddress);
-				addNode(sourceAddress, name);
+//				char* name = getNameFromHex(sourceAddress);
+//    			char* name = getUsernameFromAddress(sourceAddress);
 
-				snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "First ACK received from: %s", name);
+//				addNode(sourceAddress, name);
+
+				addEntryToUsernameTable(sourceAddress, receivedUsername);
+
+				snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "First ACK received from: %s", receivedUsername);
 				firstACK = 1;
 				// Store the message in the buffer, overwriting the oldest if necessary
 				messageIndex = (messageIndex + 1) % MAX_MESSAGES;
@@ -389,7 +395,8 @@ void receive(void) {
 
 			uint8_t sourceAddress;
 			sourceAddress = SpiritPktStackGetReceivedSourceAddress();
-			char* name = getNameFromHex(sourceAddress);
+//			char* name = getNameFromHex(sourceAddress);
+
 
 			uint8_t destAddress = SpiritPktStackGetReceivedDestAddress();
 			if (destAddress != 0xFF && destAddress != MY_ADDRESS) {
@@ -412,7 +419,9 @@ void receive(void) {
                 snprintf(receivedUsername, sizeof(payload) - 1, "%02X", sourceAddress);
             }
 
-			addNode(sourceAddress, receivedUsername);
+//			addNode(sourceAddress, receivedUsername);
+			addEntryToUsernameTable(sourceAddress, receivedUsername);
+
 
             // Extract message
             char* receivedMessage = (char*)&payload[1 + usernameLength + 1]; // +1 for null terminator
@@ -427,7 +436,8 @@ void receive(void) {
     			uint8_t sourceAddress;
     			sourceAddress = SpiritPktStackGetReceivedSourceAddress();
 
-    			char* name = getNameFromHex(sourceAddress);
+//    			char* name = getNameFromHex(sourceAddress);
+//    			char* name = getUsernameFromAddress(sourceAddress);
 
         		SpiritPktStackSetDestinationAddress(sourceAddress);
 
@@ -435,7 +445,7 @@ void receive(void) {
 
         		SpiritPktStackSetDestinationAddress(0xFF);
 
-                snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "Announcement received from: %s", name);
+                snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "Announcement received from: %s", receivedUsername);
                 // Store the message in the buffer, overwriting the oldest if necessary
                 messageIndex = (messageIndex + 1) % MAX_MESSAGES;
 
@@ -445,7 +455,7 @@ void receive(void) {
 
         	}
         	else if (payload[0] == 2) {
-                snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "ACK received from: %s", name);
+                snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "ACK received from: %s", receivedUsername);
                 firstACK = 1;
                 // Store the message in the buffer, overwriting the oldest if necessary
                 messageIndex = (messageIndex + 1) % MAX_MESSAGES;
@@ -455,7 +465,7 @@ void receive(void) {
                 }
             }
         	else if (payload[0] == 3) {
-                snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "Heartbeat received from: %s", name);
+                snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "Heartbeat received from: %s", receivedUsername);
                 // Store the message in the buffer, overwriting the oldest if necessary
                 messageIndex = (messageIndex + 1) % MAX_MESSAGES;
 
@@ -487,7 +497,7 @@ void receive(void) {
         	else {
         		// Need to stop printing on timeouts.
         		if (!timeout) {
-                    snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "%s: Message: %s", name, payload);
+                    snprintf(messageBuffer[messageIndex], MAX_MESSAGE_LENGTH, "%s: Message: %s", receivedUsername, payload);
                     messageIndex = (messageIndex + 1) % MAX_MESSAGES;
 
                     if (messageCount < MAX_MESSAGES) {
